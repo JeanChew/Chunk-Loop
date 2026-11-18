@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Chunk Loop · 听力循环播放器</title>
+<style>
+:root{
+  --bg:#f7f5f0; --panel:#fffdf9; --ink:#22201c; --mute:#857f74; --line:#e4dfd4;
+  --acc:#b4532a; --acc-soft:#f6e3d8; --flag:#fff4cc; --mark:#ffd35c; --low:#b4532a;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --bg:#191816; --panel:#22211e; --ink:#ece8df; --mute:#9a9488; --line:#38362f;
+    --acc:#e58a5c; --acc-soft:#43291c; --flag:#3a3214; --mark:#8a6a10; --low:#e58a5c; }
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;padding-bottom:45vh}
+button,select,input{font:inherit;color:inherit}
+.wrap{max-width:760px;margin:0 auto;padding:0 16px}
+header{padding:16px 0 4px}
+h1{font-size:18px;margin:0}
+#status{color:var(--mute);font-size:12.5px;min-height:1.4em}
+#status b{color:var(--ink);font-weight:600}
+#status .warn{color:var(--acc)}
+#start{margin:10px 0;padding:20px 18px;border:1.5px dashed var(--line);border-radius:12px;background:var(--panel)}
+#start.over{border-color:var(--acc);background:var(--acc-soft)}
+.srow{display:flex;gap:8px}
+.srow input{flex:1;min-width:0;font-size:16px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg)}
+.primary{border:0;background:var(--acc);color:#fff;border-radius:9px;padding:9px 18px;cursor:pointer;font-size:16px;white-space:nowrap}
+.primary:disabled{opacity:.5;cursor:default}
+.note{font-size:13px;color:var(--mute);margin-top:10px;line-height:1.6}
+.note a,.link2{color:var(--acc);background:none;border:0;padding:0;cursor:pointer;text-decoration:underline;font-size:inherit}
+.warn,.note.warn{color:var(--acc)}
+#keyask input{width:min(320px,100%);padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);margin:6px 6px 0 0}
+#recent{margin-top:12px}
+#recent .ri{display:flex;gap:8px;align-items:baseline;padding:6px 0;border-top:1px solid var(--line);font-size:14px;cursor:pointer}
+#recent .ri:hover .rt{color:var(--acc)}
+#recent .rt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#recent .rm{font-size:12px;color:var(--mute);white-space:nowrap}
+#recent h3{font-size:12px;color:var(--mute);font-weight:500;margin:0 0 4px}
+#again{margin:6px 0 0;font-size:13px}
+#err{margin:10px 0;padding:10px 14px;border-radius:10px;border:1px solid var(--acc);font-size:14px}
+#busy{margin:10px 0;padding:10px 14px;border-radius:10px;background:var(--acc-soft);font-size:14px}
+#ytwrap{position:fixed;right:16px;bottom:16px;width:356px;height:200px;z-index:20;border-radius:10px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.25);background:#000}
+#ytwrap[hidden]{display:none}
+#ytwrap iframe,#ytwrap>div{width:100%;height:100%;border:0;display:block}
+#bar{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);display:none}
+body.loaded #bar{display:block}
+#bar .in{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;padding:8px 0;font-size:14px}
+#bar label{display:inline-flex;align-items:center;gap:6px;color:var(--mute);white-space:nowrap}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--panel);padding:5px 12px;cursor:pointer}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.on{background:var(--acc);color:#fff}
+.link{border:0;background:none;color:var(--mute);cursor:pointer;margin-left:auto;padding:4px 0}
+.link:hover{color:var(--acc)}
+#more{display:none;padding:4px 0 12px;font-size:13px;color:var(--mute)}
+#more.open{display:block}
+#more .ln{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin-top:8px}
+#more input[type=number]{width:64px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 6px}
+#more p{margin:8px 0 0}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:7px;padding:4px 10px;cursor:pointer}
+.btn:hover{border-color:var(--acc)}
+main{margin:14px 0}
+.sent{margin:0 0 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel);overflow:hidden}
+.spk{font-size:11.5px;color:var(--mute);padding:6px 14px 0}
+.row{display:grid;grid-template-columns:40px 1fr auto;gap:2px 10px;align-items:center;padding:10px 12px;border-top:1px solid var(--line);position:relative;cursor:pointer}
+.row:first-child,.spk+.row{border-top:0}
+.row:hover{background:color-mix(in srgb,var(--acc-soft) 35%,transparent)}
+.row.flagged{background:var(--flag)}
+.row.sel{box-shadow:inset 3px 0 0 var(--acc)}
+.row .prog{position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--acc)}
+.pb{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:var(--bg);cursor:pointer;font-size:12px;line-height:1;padding:0}
+.pb.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.tx{font-size:18px;line-height:1.65;word-spacing:.06em}
+.w{border-radius:4px;padding:1px 1px}
+.row.sel .w{cursor:pointer}
+.row.sel .w:hover{outline:1px solid var(--acc)}
+.w.mk{background:var(--mark)}
+.w.low{border-bottom:2px dotted var(--low)}
+.w.ev{color:var(--mute);font-style:italic}
+.w.ed{text-decoration:underline wavy var(--mute)}
+main.hide .row:not(.reveal) .w{filter:blur(6px)}
+.cnt{font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums;min-width:22px;text-align:right}
+.strip{grid-column:2 / -1;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin-top:6px;padding-top:8px;border-top:1px dashed var(--line);font-size:13px;color:var(--mute);cursor:default}
+.strip .grp{display:inline-flex;align-items:center;gap:4px}
+.strip button{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:3px 9px;cursor:pointer;font-size:13px}
+.strip button:hover{border-color:var(--acc)}
+.strip button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.strip .tt{margin-left:auto;font-variant-numeric:tabular-nums;font-size:12px}
+.strip .tip{flex-basis:100%;font-size:12px}
+main.onlyflag .row:not(.flagged){display:none}
+main.onlyflag .sent.noflag{display:none}
+@media (max-width:640px){ #ytwrap{position:relative;right:auto;bottom:auto;width:auto;height:auto;aspect-ratio:16/9;margin:8px 16px 0;box-shadow:none} #bar{position:static} .strip{grid-column:1 / -1} .strip .tt{margin-left:0} }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Chunk Loop</h1>
+  <div id="status"></div>
+</header>
+
+<div id="start">
+  <div class="srow">
+    <input id="url" type="url" inputmode="url" autocomplete="off" placeholder="粘贴 YouTube 视频链接">
+    <button id="go" class="primary">开始</button>
+  </div>
+  <div id="keyask" class="note" hidden>
+    第一次使用要填 ElevenLabs 的 API key（用来自动转写）：<br>
+    <input id="key" type="password" autocomplete="off" placeholder="粘贴 API key"><button id="keysave" class="btn">保存</button><br>
+    key 只保存在这台设备的浏览器里，不会发给别人。<a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener">在 ElevenLabs 创建 key</a>
+  </div>
+  <div id="keyok" class="note" hidden>API key 已保存 · <button class="link2" id="keychange">更换</button></div>
+  <div id="localnote" class="note warn" hidden>你现在是双击打开的本地文件：转写可以用，但 YouTube 视频在本地文件里放不出来（会显示错误 153）。要用 YouTube 链接，请打开放在网上的那个版本。</div>
+  <div id="recent"></div>
+  <div class="note">也可以把本地的音频或视频拖到这里，会自动转写；或者拖入 Scribe 的 JSON 加原音频。<label class="link2">选择文件<input id="pick" type="file" multiple hidden></label></div>
+</div>
+<div id="again" hidden><button class="link2" id="againBtn">换一个视频或文件</button></div>
+<div id="busy" hidden></div>
+<div id="err" class="warn" hidden></div>
+</div>
+
+<div id="ytwrap" hidden><div id="yt"></div></div>
+
+<div id="bar"><div class="wrap">
+  <div class="in">
+    <label>速度</label>
+    <span class="seg" id="rate"><button data-r="0.5">0.5</button><button data-r="0.75">0.75</button><button data-r="1">原速</button></span>
+    <label><input id="hide" type="checkbox"> 先听后看（遮住文字）</label>
+    <button class="link" id="moreBtn">更多设置</button>
+  </div>
+  <div id="more">
+    <div class="ln">
+      <label>每遍之间停 <input id="gap" type="number" min="0" max="5" step="0.1" value="0.4"> 秒</label>
+      <label>所有片段开头提前 <input id="pre" type="number" min="0" max="1" step="0.01" value="0.12"> 秒</label>
+      <label>结尾延后 <input id="post" type="number" min="0" max="1" step="0.01" value="0.18"> 秒</label>
+    </div>
+    <div class="ln">
+      <span>点选中行里的单词时：</span>
+      <span class="seg" id="mode"><button data-m="mark" class="on">标黄</button><button data-m="split">从这里切成两段</button><button data-m="edit">改这个词</button></span>
+      <label><input id="onlyflag" type="checkbox"> 只显示标记过的</label>
+    </div>
+    <div class="ln">
+      <button class="btn" id="exsrtc">导出字幕（按段）</button>
+      <button class="btn" id="exsrts">导出字幕（按句）</button>
+      <button class="btn" id="exproj">导出工程文件</button>
+      <button class="btn" id="reseg">重新自动切分</button>
+    </div>
+    <p>分句和分段是自动建议的，不对就合并或切开。虚线下划线的词是转写时把握较低的词。修改会自动保存在这台设备上。</p>
+    <p>键盘：空格 播放 / 停止，↑ ↓ 换段，F 标记整段。</p>
+  </div>
+</div></div>
+
+<div class="wrap"><main id="list"></main></div>
+<audio id="aud" preload="auto"></audio>
+
+<script>
+'use strict';
+/* ---------- state ---------- */
+const S = { words:[], chunks:[], marks:new Set(), dur:0, jsonName:'', audioName:'', title:'', precise:false, restored:false };
+const P = { rate:1, gap:0.4, pre:0.12, post:0.18, mode:'mark', hide:false, onlyflag:false };
+const STEP = 0.05;
+const $ = id => document.getElementById(id);
+const aud = $('aud');
+const clamp = (v,a,b) => Math.min(b, Math.max(a, v));
+const num = v => { const n = typeof v === 'string' ? parseFloat(v) : v; return (typeof n === 'number' && isFinite(n)) ? n : null; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = t => { t = Math.max(0, t); const m = Math.floor(t/60), s = t - m*60; return m + ':' + (s < 10 ? '0' : '') + s.toFixed(2); };
+
+/* ---------- Scribe JSON -> words ---------- */
+function normalizeScribe(o){
+  const raw = [];
+  const take = (arr, seg) => (arr || []).forEach(w => raw.push({ w, seg }));
+  if (o && Array.isArray(o.segments)) {
+    o.segments.forEach(seg => {
+      if (Array.isArray(seg.words) && seg.words.length) take(seg.words, seg);
+      else if (seg.text) {            // 段落只有整句时间：按字符长度把时间摊给每个词
+        const st = num(seg.start_time ?? seg.start), en = num(seg.end_time ?? seg.end);
+        const toks = String(seg.text).trim().split(/\s+/).filter(Boolean);
+        if (st != null && en != null && toks.length) {
+          const total = toks.reduce((a,t) => a + t.length, 0) || 1; let acc = 0;
+          toks.forEach(t => { const a = st + (en - st) * acc / total; acc += t.length;
+            raw.push({ w:{ text:t, start_time:a, end_time: st + (en - st) * acc / total }, seg }); });
+        }
+      }
+    });
+  } else if (o && Array.isArray(o.words)) take(o.words, null);
+  else if (o && Array.isArray(o.transcripts)) o.transcripts.forEach(t => take(t.words, null));
+  else if (Array.isArray(o)) take(o, null);
+  const out = [];
+  for (const { w, seg } of raw) {
+    if (!w || typeof w !== 'object') continue;
+    const type = w.type || 'word';
+    if (type === 'spacing') continue;
+    const t = String(w.text ?? w.word ?? '').trim();
+    if (!t) continue;
+    const s = num(w.start_time ?? w.start), e = num(w.end_time ?? w.end);
+    if (s == null || e == null) continue;
+    let sp = w.speaker_id ?? w.speaker ?? (seg && (seg.speaker_id ?? (seg.speaker && (seg.speaker.id ?? seg.speaker.name ?? seg.speaker))));
+    if (sp != null && typeof sp === 'object') sp = sp.id ?? sp.name ?? null;
+    const ev = type === 'audio_event' || /^[\[(][^\])]*[\])]$/.test(t);   // 网页导出没有 type 字段，[sniffs] 这类靠方括号识别
+    out.push({ t, s, e: Math.max(e, s), sp: sp == null ? null : String(sp), ev, lp: typeof w.logprob === 'number' ? w.logprob : null });
+  }
+  out.sort((a,b) => a.s - b.s);
+  return out;
+}
+
+/* ---------- suggested segmentation ---------- */
+const CONJ = new Set(['and','but','or','because','cause','when','if','that','which','who','while','although','though','where','before','after','since','until','unless','whether','than']);
+const PREP = new Set(['to','for','with','about','in','on','at','from','into','like','by','of']);
+const ABBR = /^(mr|mrs|ms|dr|st|vs|etc|e\.g|i\.e)\.$/i;
+function segment(words){
+  const chunks = []; let sent = 0, cur = null;
+  const endSent = /[.!?…]+["'”’)\]]*$/, soft = /[,;:—–]["'”’)\]]*$/;
+  const close = () => { if (cur) { chunks.push(cur); cur = null; } };
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i], nx = words[i+1];
+    if (w.ev) {                       // [sniffs]、[background chatter] 这类声音事件单独成段，不拉长说话的片段
+      if (cur) { close(); sent++; }
+      chunks.push({ w0:i, w1:i, sent, sa:0, ea:0, flag:false }); sent++; continue;
+    }
+    if (!cur) cur = { w0:i, w1:i, sent, sa:0, ea:0, flag:false };
+    cur.w1 = i;
+    if (!nx) { close(); break; }
+    const gap = nx.s - w.e, len = cur.w1 - cur.w0 + 1;
+    const spk = nx.sp != null && w.sp != null && nx.sp !== w.sp;
+    if (spk || gap >= 1.2) { close(); sent++; continue; }
+    if (!/[A-Za-z0-9]/.test(w.t)) continue;          // 单独的 "..." 这类纯标点跟着后面的词走
+    if (endSent.test(w.t) && !ABBR.test(w.t)) { close(); sent++; continue; }
+    const nl = nx.t.toLowerCase().replace(/[^a-z']/g, '');
+    if ((soft.test(w.t) && len >= 2) || (gap >= 0.35 && len >= 2) || (len >= 4 && CONJ.has(nl)) || (len >= 7 && PREP.has(nl)) || len >= 10) close();
+  }
+  // 单个词的碎片并回同一句的前一段
+  for (let i = chunks.length - 1; i > 0; i--) {
+    const c = chunks[i], p = chunks[i-1];
+    if (c.w0 === c.w1 && p.sent === c.sent && words[c.w0].s - words[p.w1].e < 0.6) { p.w1 = c.w1; chunks.splice(i, 1); }
+  }
+  return chunks;
+}
+
+/* ---------- times ---------- */
+const DUR = () => S.dur || 1e9;
+const cStart = c => clamp(S.words[c.w0].s - P.pre + c.sa, 0, DUR());
+const cEnd   = c => clamp(S.words[c.w1].e + P.post + c.ea, cStart(c) + 0.05, DUR());
+const sentChunks = sent => S.chunks.filter(c => c.sent === sent);
+const isFlagged = c => { if (c.flag) return true; for (let i = c.w0; i <= c.w1; i++) if (S.marks.has(i)) return true; return false; };
+
+/* ---------- audio ---------- */
+function encodeWav(ab, ch){
+  const n = ab.length, sr = ab.sampleRate, bytes = n * ch * 2;
+  const buf = new ArrayBuffer(44 + bytes), dv = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  str(0,'RIFF'); dv.setUint32(4, 36 + bytes, true); str(8,'WAVE'); str(12,'fmt ');
+  dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,ch,true); dv.setUint32(24,sr,true);
+  dv.setUint32(28, sr*ch*2, true); dv.setUint16(32, ch*2, true); dv.setUint16(34,16,true); str(36,'data'); dv.setUint32(40, bytes, true);
+  const data = []; for (let c = 0; c < ch; c++) data.push(ab.getChannelData(c));
+  const pcm = new Int16Array(buf, 44, n * ch);
+  for (let i = 0, o = 0; i < n; i++) for (let c = 0; c < ch; c++, o++) { const v = clamp(data[c][i], -1, 1); pcm[o] = v < 0 ? v * 0x8000 : v * 0x7fff; }
+  return new Blob([buf], { type:'audio/wav' });
+}
+const once = (el, ok, bad) => new Promise((res, rej) => {
+  const a = () => { off(); res(); }, b = () => { off(); rej(new Error('media error')); };
+  const off = () => { el.removeEventListener(ok, a); el.removeEventListener(bad, b); };
+  el.addEventListener(ok, a); el.addEventListener(bad, b);
+});
+async function loadAudio(file){
+  stop(); dropYT(); MP.kind = 'audio'; setStatus('正在读取音频…');
+  S.audioName = file.name; S.precise = false;
+  const srcUrl = URL.createObjectURL(file);
+  let dur = 0;
+  try { aud.src = srcUrl; await once(aud, 'loadedmetadata', 'error'); dur = isFinite(aud.duration) ? aud.duration : 0; } catch (e) { dur = 0; }
+  // 40 分钟以内：整段解码成 WAV，循环边界才能精确到采样点
+  if (!dur || dur <= 40 * 60) {
+    try {
+      setStatus('正在解码音频（长文件需要几秒）…');
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const ac = new AC();
+      const data = await file.arrayBuffer();
+      const ab = await new Promise((res, rej) => { const p = ac.decodeAudioData(data, res, rej); if (p && p.catch) p.catch(rej); });
+      if (ac.close) ac.close();
+      const blob = encodeWav(ab, Math.min(2, ab.numberOfChannels));
+      aud.src = URL.createObjectURL(blob);
+      await once(aud, 'loadedmetadata', 'error');
+      S.precise = true; dur = aud.duration; URL.revokeObjectURL(srcUrl);
+    } catch (e) {
+      if (!dur) { setStatus('<span class="warn">这个音频文件浏览器无法解码，请换成 m4a / mp3 / wav 再试。</span>'); aud.removeAttribute('src'); S.dur = 0; return; }
+      aud.src = srcUrl; await once(aud, 'loadedmetadata', 'error');
+    }
+  }
+  S.dur = dur; aud.preservesPitch = true; aud.webkitPreservesPitch = true;
+  refreshAll(); showStatus();
+}
+
+/* ---------- media: local audio or YouTube ---------- */
+let yt = null, ytReady = false, ytVid = null;
+const MP = {
+  kind: null,                 // 'audio' | 'yt'
+  lastCt: 0, lastWall: 0, seekT: null, seekWall: 0,
+  ok(){ return this.kind === 'yt' ? ytReady : (this.kind === 'audio' && S.dur > 0); },
+  time(){
+    if (this.kind !== 'yt') return aud.currentTime;
+    const now = performance.now(); let ct = 0; try { ct = yt.getCurrentTime() || 0; } catch (e) {}
+    if (this.seekT != null) {                       // 刚跳转时 YouTube 还会报旧时间，先按目标时间算
+      if (Math.abs(ct - this.seekT) < 0.75 || now - this.seekWall > 2000) { this.seekT = null; this.lastCt = ct; this.lastWall = now; }
+      else return this.seekT;
+    }
+    if (ct !== this.lastCt) { this.lastCt = ct; this.lastWall = now; return ct; }
+    let st = -1, r = 1; try { st = yt.getPlayerState(); r = yt.getPlaybackRate() || 1; } catch (e) {}
+    return st === 1 ? ct + Math.min(0.5, (now - this.lastWall) / 1000) * r : ct;   // 报时较粗，播放中按经过的时间补上
+  },
+  seekPlay(t, r){
+    if (this.kind !== 'yt') { aud.playbackRate = r; aud.currentTime = t; const p = aud.play(); if (p && p.catch) p.catch(() => {}); return; }
+    try { yt.setPlaybackRate(r); yt.seekTo(t, true); yt.playVideo(); } catch (e) {}
+    this.seekT = t; this.seekWall = performance.now(); this.lastCt = t; this.lastWall = this.seekWall;
+  },
+  pause(){ if (this.kind === 'yt') { try { yt.pauseVideo(); } catch (e) {} } else if (!aud.paused) aud.pause(); },
+  ended(){ if (this.kind === 'yt') { try { return yt.getPlayerState() === 0; } catch (e) { return false; } } return aud.ended; },
+  setRate(r){ if (this.kind === 'yt') { try { yt.setPlaybackRate(r); } catch (e) {} } else aud.playbackRate = r; }
+};
+function loadYTApi(){
+  return new Promise(res => {
+    if (window.YT && window.YT.Player) return res(true);
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { if (prev) try { prev(); } catch (e) {} res(true); };
+    if (!document.getElementById('ytapi')) {
+      const sc = document.createElement('script'); sc.id = 'ytapi'; sc.src = 'https://www.youtube.com/iframe_api';
+      sc.onerror = () => res(false); document.head.appendChild(sc);
+    }
+    setTimeout(() => res(!!(window.YT && window.YT.Player)), 15000);
+  });
+}
+const YT_ERR = {
+  2: '链接里的视频编号不对，请重新复制链接。',
+  5: '这个浏览器放不了这个视频，换 Chrome 或 Safari 试试。',
+  100: '找不到这个视频，可能被删除或设为私密了。',
+  101: '视频作者不允许在别的网页里播放。文字已经转好，可以把视频录屏后拖进来循环。',
+  150: '视频作者不允许在别的网页里播放。文字已经转好，可以把视频录屏后拖进来循环。',
+  153: 'YouTube 拒绝在这个页面里播放（错误 153）。双击打开的本地文件会这样，请用放在网上的版本。'
+};
+function dropYT(){ if (yt) { try { yt.destroy(); } catch (e) {} } yt = null; ytVid = null; ytReady = false; $('ytwrap').innerHTML = '<div id="yt"></div>'; $('ytwrap').hidden = true; }
+async function openYouTube(vid){
+  stop(); MP.kind = 'yt'; S.audioName = ''; S.precise = false; aud.removeAttribute('src');
+  $('ytwrap').hidden = false;
+  if (yt && ytVid === vid) return;
+  dropYT(); $('ytwrap').hidden = false; ytVid = vid; S.dur = 0;
+  const ok = await loadYTApi();
+  if (ytVid !== vid) return;
+  if (!ok) { setStatus('<span class="warn">YouTube 播放器加载不了，检查一下网络。</span>'); return; }
+  yt = new YT.Player('yt', { videoId: vid, width: '100%', height: '100%',
+    playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+    events: {
+      onReady: () => { if (ytVid !== vid) return; ytReady = true; try { S.dur = yt.getDuration() || 0; } catch (e) {} refreshAll(); showStatus(); },
+      onStateChange: () => { if (!S.dur) { try { S.dur = yt.getDuration() || 0; } catch (e) {} } },
+      onError: e => { stop(); setStatus('<span class="warn">' + (YT_ERR[e.data] || ('视频播放出错（代码 ' + e.data + '）。')) + '</span>'); }
+    } });
+}
+
+/* ---------- loop engine ---------- */
+const play = { tok:0, ref:null, kind:null, get:null, timer:0, raf:0, count:0 };
+function stop(){
+  play.tok++; clearTimeout(play.timer); cancelAnimationFrame(play.raf);
+  MP.pause();
+  play.ref = null; play.kind = null; paintActive();
+}
+function loop(kind, ref, getRange){
+  if (!MP.ok()) { setStatus('<span class="warn">' + (MP.kind === 'yt' ? '视频还在加载，稍等一下再点。' : '还没有音频：把对应的原音频也拖到页面上。') + '</span>'); return; }
+  stop();
+  const tok = ++play.tok; play.kind = kind; play.ref = ref; play.get = getRange; play.count = 0;
+  const start = () => {
+    if (tok !== play.tok) return;
+    const [s] = getRange();
+    MP.seekPlay(s, P.rate);
+    play.count++; paintActive(); tick();
+  };
+  const tick = () => {
+    if (tok !== play.tok) return;
+    cancelAnimationFrame(play.raf); clearTimeout(play.timer);
+    const [s, e] = getRange(); const t = MP.time();
+    paintProgress((t - s) / Math.max(0.01, e - s));
+    if (t >= e || MP.ended()) { MP.pause(); play.timer = setTimeout(start, P.gap * 1000); return; }
+    play.raf = requestAnimationFrame(tick);
+    const wait = (e - t) / (P.rate || 1) * 1000;
+    play.timer = setTimeout(tick, Math.max(8, MP.kind === 'yt' ? Math.min(40, wait) : wait)); // 页面在后台时 rAF 会停，用定时器兜底
+  };
+  start();
+}
+const loopChunk = c => { if (sel !== c) select(c); loop('chunk', c, () => [cStart(c), cEnd(c)]); };
+const loopSent = sent => loop('sent', sent, () => { const cs = sentChunks(sent); return cs.length ? [cStart(cs[0]), cEnd(cs[cs.length-1])] : [0, 0.1]; });
+function restartIfActive(c){ if (play.kind === 'chunk' && play.ref === c) loopChunk(c); else if (play.kind === 'sent' && play.ref === c.sent) loopSent(c.sent); }
+
+/* ---------- render ---------- */
+let sel = null;                         // 当前选中的那一段（显示工具条的那一行）
+function wordHtml(i){
+  const w = S.words[i]; let cls = 'w';
+  if (S.marks.has(i)) cls += ' mk';
+  if (w.ev) cls += ' ev';
+  if (w.lp != null && w.lp < -0.7) cls += ' low';
+  if (w.o != null) cls += ' ed';
+  return `<span class="${cls}" data-i="${i}"${w.o != null ? ` title="原文：${esc(w.o)}"` : ''}>${esc(w.t)}</span>`;
+}
+function rowHtml(c){
+  let tx = ''; for (let i = c.w0; i <= c.w1; i++) tx += (i > c.w0 ? ' ' : '') + wordHtml(i);
+  return `<button class="pb cp" title="循环这一段">▶</button><div class="tx">${tx}</div><span class="cnt"></span><div class="prog"></div>`;
+}
+function stripHtml(c){
+  const multi = sentChunks(c.sent).length > 1, hasNext = S.chunks.indexOf(c) < S.chunks.length - 1;
+  const tip = P.mode === 'mark' ? '点这一行里听不清的单词，可以把它标黄。' : P.mode === 'split' ? '点一个单词，从它前面切成两段。' : '点一个单词，修改它的文字。';
+  return `<div class="strip">
+    <span class="grp">开头被切掉？<button data-n="s-">提前一点</button><button data-n="s+">延后一点</button></span>
+    <span class="grp">结尾被切掉？<button data-n="e+">延长一点</button><button data-n="e-">缩短一点</button></span>
+    <button class="fl">整段没听出</button>
+    ${P.hide ? '<button class="eye">看文字</button>' : ''}
+    ${hasNext ? '<button class="mg">和下一段合并</button>' : ''}
+    ${multi ? '<button class="ls">循环整句</button>' : ''}
+    <span class="tt"></span>
+    <span class="tip">${tip}</span>
+  </div>`;
+}
+function refreshRow(r, c){
+  r.classList.toggle('flagged', isFlagged(c));
+  const st = r.querySelector('.strip'); if (!st) return;
+  st.querySelector('.tt').textContent = fmt(cStart(c)) + ' – ' + fmt(cEnd(c));
+  st.querySelector('.fl').classList.toggle('on', !!c.flag);
+  const ls = st.querySelector('.ls'); if (ls) ls.classList.toggle('on', play.kind === 'sent' && play.ref === c.sent);
+}
+function select(c){
+  document.querySelectorAll('.strip').forEach(x => x.remove());
+  document.querySelectorAll('.row.sel').forEach(x => x.classList.remove('sel'));
+  sel = c; const r = c && rowOf(c); if (!r) return;
+  r.classList.add('sel'); r.insertAdjacentHTML('beforeend', stripHtml(c)); refreshRow(r, c);
+}
+function render(){
+  const L = $('list'); L.innerHTML = '';
+  let last = null, grp = null, lastSp = null;
+  S.chunks.forEach((c, ci) => {
+    if (c.sent !== last) {
+      last = c.sent;
+      grp = document.createElement('section'); grp.className = 'sent'; grp.dataset.sent = c.sent;
+      const sp = S.words[c.w0].sp;
+      if (sp != null && sp !== lastSp) { const d = document.createElement('div'); d.className = 'spk'; d.textContent = sp.replace(/^speaker_/, '说话人 '); grp.appendChild(d); }
+      lastSp = sp; L.appendChild(grp);
+    }
+    const r = document.createElement('div'); r.className = 'row'; r.dataset.ci = ci; r.innerHTML = rowHtml(c);
+    grp.appendChild(r); refreshRow(r, c);
+  });
+  document.body.classList.toggle('loaded', S.words.length > 0);
+  if (sel && S.chunks.includes(sel)) select(sel); else sel = null;
+  refreshSentHeads(); paintActive();
+}
+function refreshSentHeads(){
+  document.querySelectorAll('.sent').forEach(g => { g.classList.toggle('noflag', !sentChunks(+g.dataset.sent).some(isFlagged)); });
+}
+function refreshAll(){
+  document.querySelectorAll('.row').forEach(r => refreshRow(r, S.chunks[+r.dataset.ci]));
+  refreshSentHeads();
+}
+const rowOf = c => document.querySelector('.row[data-ci="' + S.chunks.indexOf(c) + '"]');
+function paintActive(){
+  document.querySelectorAll('.row').forEach(r => { r.querySelector('.prog').style.width = '0'; r.querySelector('.cnt').textContent = ''; });
+  document.querySelectorAll('.pb.on').forEach(b => { b.classList.remove('on'); b.textContent = '▶'; });
+  if (play.kind === 'chunk') {
+    const r = rowOf(play.ref);
+    if (r) { const b = r.querySelector('.cp'); b.classList.add('on'); b.textContent = '■'; r.querySelector('.cnt').textContent = '×' + play.count; }
+  }
+  if (sel) { const r = rowOf(sel); if (r) refreshRow(r, sel); }
+}
+function paintProgress(f){
+  if (play.kind !== 'chunk') return;
+  const r = rowOf(play.ref); if (r) r.querySelector('.prog').style.width = (clamp(f, 0, 1) * 100).toFixed(1) + '%';
+}
+function setStatus(html){ $('status').innerHTML = html; }
+function showStatus(){
+  const parts = [];
+  if (S.words.length) parts.push((S.title ? `<b>${esc(S.title)}</b> · ` : '') + `${S.chunks.length} 段`);
+  if (MP.kind === 'yt') parts.push(ytReady ? ('YouTube 视频' + (S.dur ? ' ' + fmt(S.dur) : '')) : '视频加载中…');
+  else if (MP.kind === 'audio' && S.dur) parts.push(`音频 ${fmt(S.dur)}${S.precise ? '' : '（文件较长，循环边界可能有几十毫秒误差）'}`);
+  else if (S.words.length) parts.push('<span class="warn">还缺原音频，拖进来才能播放</span>');
+  if (S.restored) parts.push('已恢复上次的修改');
+  if (MP.kind === 'audio' && S.words.length && S.dur && S.words[S.words.length-1].e > S.dur + 1.5) parts.push('<span class="warn">文字比音频长，这两个文件可能不是同一段</span>');
+  setStatus(parts.join(' · '));
+}
+
+/* ---------- persistence ---------- */
+const storeKey = () => 'chunkloop:' + S.jsonName + ':' + S.words.length;
+function snapshot(full){
+  const o = { app:'chunk-loop', v:1, source:{ json:S.jsonName, audio:S.audioName },
+    chunks: S.chunks.map(c => ({ w0:c.w0, w1:c.w1, sent:c.sent, sa:+c.sa.toFixed(3), ea:+c.ea.toFixed(3), flag:!!c.flag })),
+    marks: [...S.marks].sort((a,b) => a-b), settings: { ...P } };
+  if (full) o.words = S.words; else o.edits = S.words.map((w,i) => w.o != null ? [i, w.t, w.o] : null).filter(Boolean);
+  return o;
+}
+let saveT = 0;
+function saveNow(){ clearTimeout(saveT); try { if (S.words.length) localStorage.setItem(storeKey(), JSON.stringify(snapshot(false))); localStorage.setItem('chunkloop:settings', JSON.stringify(P)); } catch (e) {} }
+function save(){ clearTimeout(saveT); saveT = setTimeout(saveNow, 300); }
+window.addEventListener('pagehide', saveNow);
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(); });
+function applySnapshot(o){
+  const n = S.words.length;
+  const ok = Array.isArray(o.chunks) && o.chunks.length && o.chunks.every(c => c.w0 >= 0 && c.w1 >= c.w0 && c.w1 < n);
+  if (!ok) return false;
+  S.chunks = o.chunks.map(c => ({ w0:c.w0, w1:c.w1, sent:c.sent, sa:+c.sa || 0, ea:+c.ea || 0, flag:!!c.flag }));
+  S.marks = new Set((o.marks || []).filter(i => i >= 0 && i < n));
+  (o.edits || []).forEach(([i, t, orig]) => { if (S.words[i]) { S.words[i].t = t; S.words[i].o = orig; } });
+  return true;
+}
+function loadSettings(){
+  try { const o = JSON.parse(localStorage.getItem('chunkloop:settings') || 'null'); if (o) Object.keys(P).forEach(k => { if (typeof o[k] === typeof P[k]) P[k] = o[k]; }); } catch (e) {}
+  syncControls();
+}
+function syncControls(){
+  if (![0.5,0.75,1].includes(P.rate)) P.rate = P.rate < 0.62 ? 0.5 : P.rate < 0.9 ? 0.75 : 1;
+  document.querySelectorAll('#rate button').forEach(b => b.classList.toggle('on', parseFloat(b.dataset.r) === P.rate));
+  $('gap').value = P.gap; $('pre').value = P.pre; $('post').value = P.post;
+  $('hide').checked = P.hide; $('onlyflag').checked = P.onlyflag;
+  document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.m === P.mode));
+  $('list').classList.toggle('hide', P.hide); $('list').classList.toggle('onlyflag', P.onlyflag);
+}
+
+/* ---------- loading files ---------- */
+function loadJsonText(text, name){
+  let o; try { o = JSON.parse(text); } catch (e) { setStatus('<span class="warn">' + esc(name) + ' 不是有效的 JSON 文件。</span>'); return; }
+  stop(); S.restored = false; S.title = '';
+  if (o && o.app === 'chunk-loop' && Array.isArray(o.words)) {          // 本工具导出的工程文件
+    S.words = o.words; S.jsonName = (o.source && o.source.json) || name;
+    if (!applySnapshot(o)) { S.chunks = segment(S.words); S.marks = new Set(); }
+  } else {
+    const words = normalizeScribe(o);
+    if (!words.length) { setStatus('<span class="warn">在 ' + esc(name) + ' 里没找到带时间的词（需要 segments[].words[] 或 words[]）。</span>'); return; }
+    S.words = words; S.jsonName = name; S.marks = new Set(); S.chunks = segment(words);
+    try { const saved = JSON.parse(localStorage.getItem(storeKey()) || 'null'); if (saved && applySnapshot(saved)) S.restored = true; } catch (e) {}
+  }
+  render(); showStatus();
+}
+function loadWords(words, id, title){
+  saveNow(); stop(); S.words = words; S.jsonName = id; S.title = title || ''; S.marks = new Set(); S.chunks = segment(words); S.restored = false;
+  try { const saved = JSON.parse(localStorage.getItem(storeKey()) || 'null'); if (saved && applySnapshot(saved)) S.restored = true; } catch (e) {}
+  render(); showStart(false); showStatus(); window.scrollTo(0, 0);
+}
+
+/* --- API key --- */
+const KEYK = 'chunkloop:key'; let memKey = '';
+const getKey = () => { try { return localStorage.getItem(KEYK) || memKey; } catch (e) { return memKey; } };
+function setKey(k){ memKey = k; try { k ? localStorage.setItem(KEYK, k) : localStorage.removeItem(KEYK); } catch (e) {} syncKeyUI(); }
+function syncKeyUI(force){ const has = !!getKey(); $('keyask').hidden = has && !force; $('keyok').hidden = !has || !!force; }
+$('keysave').addEventListener('click', () => { const k = $('key').value.trim(); if (!k) return; setKey(k); $('key').value = ''; setStatus('API key 已保存。'); });
+$('key').addEventListener('keydown', e => { if (e.key === 'Enter') $('keysave').click(); });
+$('keychange').addEventListener('click', () => syncKeyUI(true));
+
+/* --- transcription --- */
+const API = 'https://api.elevenlabs.io/v1/speech-to-text';
+const MODELS = ['scribe_v3', 'scribe_v2'];
+async function transcribe(src){
+  const key = getKey(); let last = '';
+  for (const model of MODELS) {
+    const fd = new FormData();
+    fd.append('model_id', model);
+    if (src.url) fd.append('source_url', src.url); else fd.append('file', src.file, src.file.name);
+    fd.append('timestamps_granularity', 'word'); fd.append('diarize', 'true'); fd.append('tag_audio_events', 'true');
+    let res;
+    try { res = await fetch(API, { method: 'POST', headers: { 'xi-api-key': key }, body: fd }); }
+    catch (e) { throw new Error('连不上 ElevenLabs。可能是网络问题，也可能是浏览器拦下了这个请求（双击打开的本地页面有时会这样）。'); }
+    if (res.ok) return await res.json();
+    let detail = ''; try { const j = await res.json(); const d = j.detail ?? j; detail = typeof d === 'string' ? d : (d.message || d.status || JSON.stringify(d)); } catch (e) {}
+    if ((res.status === 400 || res.status === 422) && /model/i.test(detail) && model !== MODELS[MODELS.length - 1]) { last = detail; continue; }
+    if (res.status === 401) throw new Error('API key 不对或已失效。点「更换」重新填一个。');
+    if (res.status === 402 || /quota|credit|insufficient|limit/i.test(detail)) throw new Error('ElevenLabs 的额度不够了：' + detail);
+    throw new Error('转写失败（' + res.status + '）：' + (detail || '没有更多信息'));
+  }
+  throw new Error('转写失败：' + last);
+}
+function showErr(t){ const e = $('err'); e.textContent = t || ''; e.hidden = !t; }
+let busyT = 0;
+function busy(on, what){
+  clearInterval(busyT); $('go').disabled = !!on;
+  if (!on) { $('busy').hidden = true; return; }
+  const t0 = Date.now(), b = $('busy'); b.hidden = false;
+  const draw = () => { b.textContent = `正在转写${what || ''}…已经 ${Math.round((Date.now() - t0) / 1000)} 秒。几分钟的视频一般要几十秒，越长越久，别关页面。`; };
+  draw(); busyT = setInterval(draw, 1000);
+}
+
+/* --- transcript cache and recent list --- */
+const RECK = 'chunkloop:recent';
+const getRecent = () => { try { return JSON.parse(localStorage.getItem(RECK) || '[]'); } catch (e) { return []; } };
+function getTx(id){ try { return JSON.parse(localStorage.getItem('chunkloop:tx:' + id) || 'null'); } catch (e) { return null; } }
+function saveTx(id, meta, words){
+  const rec = getRecent().filter(r => r.id !== id); rec.unshift({ id, ...meta, when: Date.now(), n: words.length });
+  const data = JSON.stringify({ meta, words });
+  for (let tries = 0; tries < 6; tries++) {
+    try { localStorage.setItem('chunkloop:tx:' + id, data); break; }
+    catch (e) { const old = rec.pop(); if (!old || old.id === id) break; try { localStorage.removeItem('chunkloop:tx:' + old.id); } catch (_) {} }
+  }
+  try { localStorage.setItem(RECK, JSON.stringify(rec.slice(0, 20))); } catch (e) {}
+  drawRecent();
+}
+function drawRecent(){
+  const rec = getRecent().filter(r => getTx(r.id)); const box = $('recent');
+  if (!rec.length) { box.innerHTML = ''; return; }
+  box.innerHTML = '<h3>最近转写过的（再次打开不会重复收费）</h3>' + rec.slice(0, 8).map(r =>
+    `<div class="ri" data-id="${esc(r.id)}"><span class="rt">${esc(r.title || r.name || r.id)}</span><span class="rm">${r.kind === 'yt' ? 'YouTube' : '本地文件'} · ${new Date(r.when).toLocaleDateString()}</span></div>`).join('');
+}
+$('recent').addEventListener('click', e => {
+  const it = e.target.closest('.ri'); if (!it) return;
+  const r = getRecent().find(x => x.id === it.dataset.id), tx = getTx(it.dataset.id); if (!r || !tx) return;
+  if (r.kind === 'yt') { openYouTube(r.vid); loadWords(tx.words, r.id, r.title); }
+  else { showErr(''); stop(); dropYT(); MP.kind = null; S.dur = 0; S.audioName = ''; aud.removeAttribute('src'); loadWords(tx.words, r.id, r.title || r.name); setStatus(`<b>${esc(r.name)}</b> · <span class="warn">把这个原文件再拖进来就能播放</span>`); }
+});
+
+/* --- YouTube link --- */
+function ytId(raw){
+  const s = raw.trim();
+  try {
+    const u = new URL(/^https?:\/\//i.test(s) ? s : 'https://' + s);
+    const h = u.hostname.replace(/^(www|m|music)\./, '');
+    if (h === 'youtu.be') { const v = u.pathname.slice(1, 12); return /^[\w-]{11}$/.test(v) ? v : null; }
+    if (/(^|\.)youtube(-nocookie)?\.com$/.test(h)) {
+      const v = u.searchParams.get('v'); if (v && /^[\w-]{11}/.test(v)) return v.slice(0, 11);
+      const m = u.pathname.match(/^\/(shorts|live|embed|v)\/([\w-]{11})/); if (m) return m[2];
+    }
+  } catch (e) {}
+  return /^[\w-]{11}$/.test(s) ? s : null;
+}
+async function ytTitle(url){
+  try { const r = await fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(url)); if (r.ok) return (await r.json()).title || ''; } catch (e) {}
+  return '';
+}
+async function goUrl(){
+  showErr(''); const raw = $('url').value.trim(); if (!raw) { $('url').focus(); return; }
+  const vid = ytId(raw);
+  if (!vid) { showErr('这不像 YouTube 链接。目前只支持 YouTube；其他来源请录屏或下载后把文件拖进来。'); return; }
+  const id = 'yt-' + vid, url = 'https://www.youtube.com/watch?v=' + vid;
+  const cached = getTx(id);
+  if (!cached && !getKey()) { syncKeyUI(true); showErr('先在下面填上 ElevenLabs 的 API key。'); $('key').focus(); return; }
+  openYouTube(vid);                                   // 先把视频放出来，转写在后台进行
+  if (cached) { loadWords(cached.words, id, cached.meta && cached.meta.title); return; }
+  stop(); S.words = []; S.chunks = []; S.marks = new Set(); S.jsonName = ''; S.title = ''; render();
+  busy(true);
+  try {
+    const titleP = ytTitle(url);
+    const o = await transcribe({ url });
+    const words = normalizeScribe(o);
+    if (!words.length) throw new Error('转写结果里没有文字，这个视频可能没有人声。');
+    const title = await titleP;
+    saveTx(id, { kind: 'yt', vid, url, title }, words);
+    if (ytVid === vid) loadWords(words, id, title);
+  } catch (e) { if (ytVid === vid) dropYT(); MP.kind = null; showStart(true); showErr(e.message); setStatus(''); }
+  finally { busy(false); }
+}
+$('go').addEventListener('click', goUrl);
+$('url').addEventListener('keydown', e => { if (e.key === 'Enter') goUrl(); });
+
+/* --- local files --- */
+async function handleFiles(files){
+  const list = [...files];
+  const js = list.filter(f => /\.json$/i.test(f.name) || f.type === 'application/json');
+  const au = list.filter(f => !js.includes(f) && (/^(audio|video)\//.test(f.type) || /\.(m4a|mp3|wav|aac|mp4|mov|m4v|ogg|opus|flac|webm|aiff?|caf)$/i.test(f.name)));
+  showErr('');
+  if (!js.length && !au.length) { showErr('没认出这些文件：需要音频 / 视频文件，或者 Scribe 的 JSON。'); return; }
+  if (js.length) { loadJsonText(await js[0].text(), js[0].name); if (au.length) await loadAudio(au[0]); showStart(!S.words.length); return; }
+  const f = au[0], id = 'file-' + f.name + '-' + f.size;
+  const pairing = S.words.length && (S.jsonName === id || (!S.jsonName.startsWith('yt-') && !S.jsonName.startsWith('file-') && !(MP.kind === 'audio' && S.dur)));
+  if (pairing) { await loadAudio(f); return; }        // 给已经载入的文字配上音频
+  const cached = getTx(id);
+  if (cached) { await loadAudio(f); loadWords(cached.words, id, f.name); return; }
+  if (!getKey()) { showStart(true); syncKeyUI(true); showErr('要自动转写这个文件，先在下面填上 ElevenLabs 的 API key。'); return; }
+  stop(); S.words = []; S.chunks = []; S.marks = new Set(); S.jsonName = ''; S.title = ''; render();
+  await loadAudio(f);
+  busy(true, ' ' + f.name);
+  try {
+    const o = await transcribe({ file: f });
+    const words = normalizeScribe(o);
+    if (!words.length) throw new Error('转写结果里没有文字，这个文件可能没有人声。');
+    saveTx(id, { kind: 'file', name: f.name }, words);
+    loadWords(words, id, f.name);
+  } catch (e) { showStart(true); showErr(e.message); }
+  finally { busy(false); }
+}
+function showStart(open){ $('start').hidden = !open; $('again').hidden = open || !S.words.length; if (open) drawRecent(); }
+$('againBtn').addEventListener('click', () => { showErr(''); showStart(true); $('url').value = ''; $('url').focus(); });
+const drop = $('start');
+['dragenter','dragover'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); if (ev === 'drop' || e.relatedTarget == null) drop.classList.remove('over'); }));
+document.addEventListener('drop', e => { if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+$('pick').addEventListener('change', e => { if (e.target.files.length) handleFiles(e.target.files); e.target.value = ''; });
+
+/* ---------- editing ---------- */
+function nudge(c, which){
+  const d = which[1] === '+' ? STEP : -STEP;
+  if (which[0] === 's') { c.sa += d; if (cStart(c) > cEnd(c) - 0.1) c.sa -= d; }
+  else { c.ea += d; if (cEnd(c) < cStart(c) + 0.1) c.ea -= d; }
+  const r = rowOf(c); if (r) refreshRow(r, c); refreshSentHeads(); save();
+  if (which[0] === 's' || !(play.kind === 'chunk' && play.ref === c)) { if (S.dur) loopChunk(c); }   // 改起点就从头再放，马上能听到效果
+}
+function splitAt(c, i){
+  if (i <= c.w0 || i > c.w1) return;
+  const active = play.kind === 'chunk' && play.ref === c;
+  const nc = { w0:i, w1:c.w1, sent:c.sent, sa:0, ea:c.ea, flag:false };
+  c.w1 = i - 1; c.ea = 0;
+  S.chunks.splice(S.chunks.indexOf(c) + 1, 0, nc);
+  if (active) stop();
+  render(); save(); showStatus();
+}
+function mergeNext(c){
+  const k = S.chunks.indexOf(c), nx = S.chunks[k+1]; if (!nx) return;
+  const was = play.ref; stop(); if (sel === nx) sel = c;
+  c.w1 = nx.w1; c.ea = nx.ea; c.flag = c.flag || nx.flag;
+  if (nx.sent !== c.sent) { const old = nx.sent; S.chunks.forEach(x => { if (x.sent === old) x.sent = c.sent; }); }
+  S.chunks.splice(k+1, 1);
+  render(); save(); showStatus();
+  if (was === c || was === nx) loopChunk(c);
+}
+$('list').addEventListener('click', e => {
+  const t = e.target, r = t.closest('.row'); if (!r) return;
+  const c = S.chunks[+r.dataset.ci]; if (!c) return;
+  const playing = play.kind === 'chunk' && play.ref === c;
+  if (t.closest('.cp')) { playing ? stop() : loopChunk(c); return; }
+  if (t.closest('.strip')) {
+    if (t.dataset.n) nudge(c, t.dataset.n);
+    else if (t.classList.contains('fl')) { c.flag = !c.flag; refreshRow(r, c); refreshSentHeads(); save(); }
+    else if (t.classList.contains('eye')) r.classList.toggle('reveal');
+    else if (t.classList.contains('mg')) mergeNext(c);
+    else if (t.classList.contains('ls')) { (play.kind === 'sent' && play.ref === c.sent) ? stop() : loopSent(c.sent); refreshRow(r, c); }
+    return;
+  }
+  if (t.classList.contains('w') && c === sel) {          // 选中的那一行：点单词 = 标黄 / 切开 / 改字
+    const i = +t.dataset.i;
+    if (P.mode === 'mark') { S.marks.has(i) ? S.marks.delete(i) : S.marks.add(i); t.classList.toggle('mk'); refreshRow(r, c); refreshSentHeads(); save(); }
+    else if (P.mode === 'split') splitAt(c, i);
+    else if (P.mode === 'edit') {
+      const w = S.words[i]; const v = prompt('把这个词改成（留空取消）：', w.t);
+      if (v != null && v.trim() && v.trim() !== w.t) { if (w.o == null) w.o = w.t; w.t = v.trim(); if (w.t === w.o) delete w.o; t.outerHTML = wordHtml(i); save(); }
+    }
+    return;
+  }
+  if (!playing) loopChunk(c);                             // 其他情况：点一行就循环它
+});
+
+/* ---------- toolbar ---------- */
+$('rate').addEventListener('click', e => { const v = parseFloat(e.target.dataset.r); if (!v) return; P.rate = v; MP.setRate(v); syncControls(); save(); });
+$('moreBtn').addEventListener('click', () => { const o = $('more').classList.toggle('open'); $('moreBtn').textContent = o ? '收起设置' : '更多设置'; });
+[['gap',0,5],['pre',0,1],['post',0,1]].forEach(([id,a,b]) => $(id).addEventListener('input', e => {
+  const v = parseFloat(e.target.value); if (!isFinite(v)) return; P[id] = clamp(v, a, b); if (id !== 'gap') refreshAll(); save();
+}));
+$('mode').addEventListener('click', e => { const m = e.target.dataset.m; if (!m) return; P.mode = m; syncControls(); if (sel) select(sel); save(); });
+$('hide').addEventListener('change', e => { P.hide = e.target.checked; syncControls(); if (sel) select(sel); save(); });
+$('onlyflag').addEventListener('change', e => { P.onlyflag = e.target.checked; syncControls(); save(); });
+$('reseg').addEventListener('click', () => {
+  if (!S.words.length) return;
+  if (!confirm('重新自动切分会丢掉你手动改过的切分和起止时间（单词标记和改字会保留）。继续吗？')) return;
+  stop(); S.chunks = segment(S.words); S.restored = false; render(); save(); showStatus();
+});
+
+/* ---------- export ---------- */
+function download(name, text, type){
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+const srtTime = t => { t = Math.max(0, t); const ms = Math.round(t * 1000); const h = Math.floor(ms/3600000), m = Math.floor(ms%3600000/60000), s = Math.floor(ms%60000/1000), r = ms%1000;
+  const p = (n, l) => String(n).padStart(l, '0'); return `${p(h,2)}:${p(m,2)}:${p(s,2)},${p(r,3)}`; };
+const textOf = (a, b) => { let s = ''; for (let i = a; i <= b; i++) s += (i > a ? ' ' : '') + S.words[i].t; return s; };
+function buildSrt(bySentence){
+  let items;
+  if (bySentence) { const m = new Map(); S.chunks.forEach(c => { const x = m.get(c.sent); if (x) { x.w1 = c.w1; x.ea = c.ea; } else m.set(c.sent, { w0:c.w0, w1:c.w1, sa:c.sa, ea:c.ea }); }); items = [...m.values()]; }
+  else items = S.chunks;
+  // SRT 用词本身的时间加上你的微调，不加循环余量，避免相邻字幕重叠
+  return items.map((c, k) => { const s = Math.max(0, S.words[c.w0].s + c.sa), e = Math.max(s + 0.05, S.words[c.w1].e + c.ea);
+    return `${k+1}\n${srtTime(s)} --> ${srtTime(e)}\n${textOf(c.w0, c.w1)}\n`; }).join('\n');
+}
+const baseName = () => (S.jsonName || 'chunk-loop').replace(/\.json$/i, '');
+$('exproj').addEventListener('click', () => { if (S.words.length) download(baseName() + '.chunkloop.json', JSON.stringify(snapshot(true), null, 1), 'application/json'); });
+$('exsrtc').addEventListener('click', () => { if (S.words.length) download(baseName() + '.chunks.srt', buildSrt(false), 'text/plain'); });
+$('exsrts').addEventListener('click', () => { if (S.words.length) download(baseName() + '.sentences.srt', buildSrt(true), 'text/plain'); });
+
+/* ---------- keyboard ---------- */
+const visibleChunks = () => [...document.querySelectorAll('.row')].filter(r => r.offsetParent !== null).map(r => S.chunks[+r.dataset.ci]);
+document.addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const tag = (e.target.tagName || '').toLowerCase(); if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+  if (!S.chunks.length) return;
+  const cur = sel && S.chunks.includes(sel) ? sel : null, k = e.key.toLowerCase();
+  if (k === ' ') { e.preventDefault(); if (play.kind) stop(); else loopChunk(cur || visibleChunks()[0] || S.chunks[0]); return; }
+  if (k === 'arrowdown' || k === 'arrowup') {
+    e.preventDefault(); const vis = visibleChunks(); if (!vis.length) return;
+    let i = vis.indexOf(cur); i = i < 0 ? 0 : clamp(i + (k === 'arrowdown' ? 1 : -1), 0, vis.length - 1);
+    loopChunk(vis[i]); const r = rowOf(vis[i]); if (r) r.scrollIntoView({ block:'center', behavior:'smooth' }); return;
+  }
+  if (!cur) return;
+  const r = rowOf(cur);
+  if (k === 'f') { cur.flag = !cur.flag; if (r) refreshRow(r, cur); refreshSentHeads(); save(); }
+  else if (k === 'r') { if (r) r.classList.toggle('reveal'); }
+  else if (k === 'q') nudge(cur, 's-'); else if (k === 'w') nudge(cur, 's+');
+  else if (k === 'o') nudge(cur, 'e-'); else if (k === 'p') nudge(cur, 'e+');
+});
+const _loopChunk = loopChunk;
+window.__cl = { S, P, play, MP, segment, normalizeScribe, cStart, cEnd, buildSrt, loopChunk:_loopChunk, stop, sel:() => sel, ytId };
+
+loadSettings();
+syncKeyUI(); drawRecent(); showStart(true);
+if (location.protocol === 'file:') $('localnote').hidden = false;
+</script>
+</body>
+</html>
