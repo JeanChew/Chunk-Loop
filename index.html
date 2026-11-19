@@ -48,7 +48,14 @@ body:not(.loaded) .needs{display:none !important}
 #status:empty{display:none}
 .warn{color:var(--acc)}
 #err{margin:10px 0;padding:10px 14px;border-radius:10px;border:1px solid var(--acc);color:var(--acc);font-size:14px}
-#busy{margin:10px 0;padding:10px 14px;border-radius:10px;background:var(--acc-soft);font-size:14px}
+#busy{margin:10px 0;padding:12px 16px;border-radius:12px;background:var(--panel);border:1px solid var(--line);font-size:14px;max-width:760px}
+.pgt{font-weight:600;margin-bottom:6px}
+.pgs{display:flex;gap:8px;align-items:baseline;padding:3px 0;color:var(--mute);flex-wrap:wrap}
+.pgs.on{color:var(--ink)} .pgs.done{color:var(--ink)}
+.pgi{width:14px;text-align:center;color:var(--mute)} .pgs.on .pgi{color:var(--acc)} .pgs.done .pgi{color:#3b6d11}
+.pgd{font-size:12.5px;color:var(--mute);font-variant-numeric:tabular-nums}
+.pgbar{height:6px;border-radius:3px;background:var(--line);margin:2px 0 6px 22px;overflow:hidden} .pgbar i{display:block;height:100%;background:var(--acc);transition:width .3s}
+.pgn{font-size:12.5px;color:var(--mute);margin-top:6px;line-height:1.6}
 #start{margin:16px 0;padding:22px 18px;border:1.5px dashed var(--line);border-radius:12px;background:var(--panel);max-width:760px}
 #start.over{border-color:var(--acc);background:var(--acc-soft)}
 .srow{display:flex;gap:8px}
@@ -259,6 +266,8 @@ const AZ = (() => {
     if (/(ow|ew|oo|ue|o)$/.test(w) && !/(ow)$/.test(w.replace(/(how|now|wow|cow)$/, ''))) {}
     if (/^(go|so|no|do|to|who|two|too|you|new|knew|true|how|now|wow|show|know|low|grow|throw|though|although)$/.test(w)) return 'w';
     if (/^(i|my|by|why|high|buy|try|fly|be|he|she|me|we|see|the|they|say|day|way|may|play|pay|stay|okay|hey|key|free|three|agree)$/.test(w)) return 'y';
+    if (/(o|oo|ou|ow|ew|ue|oe)$/.test(w) && !/[^aeiou]e$/.test(w)) return 'w';
+    if (/(ee|ey|ay|ie|[^aeiou]y)$/.test(w)) return 'y';
     if (/[aeiouy]$/.test(w)) {
       if (/[^aeiou]e$/.test(w) && !VOWEL_END_E.has(w)) return 'C';     // silent e: make, like, come
       return 'V';
@@ -324,6 +333,11 @@ const AZ = (() => {
         add('连读', i, i + 1, words[i].t + '‿' + words[i + 1].t, null, '两个元音之间会冒出一个轻轻的 ' + ls + ' 音把它们接起来', 4);
         link.add(i); continue;
       }
+      // and + consonant: d is almost always dropped
+      if (a === 'and' && !bv) {
+        add('吞音', i, i + 1, words[i].t + ' ' + words[i + 1].t, 'an ' + b, 'and 后面接辅音时，d 通常整个省掉，只剩很弱的 ən 或 n', 3);
+        continue;
+      }
       // t/d dropped between consonants
       if (/[nslfkpc](t|d)$/.test(base(a)) && !bv && !/^(h|y|w)/.test(b)) {
         const ab = base(a);
@@ -350,7 +364,7 @@ const AZ = (() => {
     }
     if (weak.length) {
       const short = weak.filter(i => ms(i) <= 120);
-      const parts = weak.slice(0, 4).map(i => N(i) + ' [' + WEAK[N(i)] + ']');
+      const parts = weak.slice(0, 4).map(i => N(i) + ' [' + (N(i) === 'the' && words[i + 1] && vStart(N(i + 1)) ? 'ði' : WEAK[N(i)]) + ']');
       const ev = short.length ? '；这段录音里 ' + short.slice(0, 3).map(i => N(i) + ' 只有 ' + ms(i) + ' 毫秒').join('，') : '';
       add('弱读', weak[0], weak[weak.length - 1], weak.slice(0, 4).map(i => N(i)).join(' · '), parts.join('  '), '虚词不重读，元音缩成很弱的 ə' + ev, 2);
     }
@@ -369,7 +383,7 @@ if (typeof module !== 'undefined') module.exports = AZ;
 
 'use strict';
 /* ---------- state ---------- */
-const S = { words:[], chunks:[], marks:new Set(), notes:{}, dur:0, jsonName:'', audioName:'', title:'', url:'', precise:false, restored:false };
+const S = { words:[], chunks:[], marks:new Set(), notes:{}, dur:0, jsonName:'', audioName:'', title:'', url:'', precise:false, restored:false, ab:null };
 const P = { rate:1, gap:0.4, pre:0.12, post:0.18, hide:false, onlyflag:false };
 const STEP = 0.05;
 const $ = id => document.getElementById(id);
@@ -470,19 +484,21 @@ const once = (el, ok, bad) => new Promise((res, rej) => {
   const off = () => { el.removeEventListener(ok, a); el.removeEventListener(bad, b); };
   el.addEventListener(ok, a); el.addEventListener(bad, b);
 });
+const BIG = 300 * 1048576;
 async function loadAudio(file){
   stop(); dropYT(); MP.kind = 'audio'; setStatus('正在读取音频…');
-  S.audioName = file.name; S.precise = false;
+  S.audioName = file.name; S.precise = false; S.ab = null;
   const srcUrl = URL.createObjectURL(file);
   let dur = 0;
   try { aud.src = srcUrl; await once(aud, 'loadedmetadata', 'error'); dur = isFinite(aud.duration) ? aud.duration : 0; } catch (e) { dur = 0; }
-  if (!dur || dur <= 40 * 60) {                       // 整段解码成 WAV，循环边界才精确
+  if ((!dur || dur <= 40 * 60) && file.size <= BIG) {  // 整段解码成 WAV，循环边界才精确；太大的文件不整个读进内存
     try {
       setStatus('正在解码音频（长文件要几秒）…');
       const AC = window.AudioContext || window.webkitAudioContext; const ac = new AC();
       const data = await file.arrayBuffer();
       const ab = await new Promise((res, rej) => { const p = ac.decodeAudioData(data, res, rej); if (p && p.catch) p.catch(rej); });
       if (ac.close) ac.close();
+      S.ab = ab;
       aud.src = URL.createObjectURL(encodeWav(ab, Math.min(2, ab.numberOfChannels)));
       await once(aud, 'loadedmetadata', 'error');
       S.precise = true; dur = aud.duration; URL.revokeObjectURL(srcUrl);
@@ -494,6 +510,22 @@ async function loadAudio(file){
   S.dur = dur; aud.preservesPitch = true; aud.webkitPreservesPitch = true;
   refreshAll(); showStatus(); return true;
 }
+
+async function compactAudio(){              // 16 kHz 单声道 WAV：只留转写需要的声音，体积小很多
+  const ab = S.ab; if (!ab) return null;
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext; if (!OAC) return null;
+  const sr = 16000, oc = new OAC(1, Math.max(1, Math.ceil(ab.duration * sr)), sr);
+  const src = oc.createBufferSource(); src.buffer = ab; src.connect(oc.destination); src.start();
+  const out = await oc.startRendering();
+  return encodeWav(out, 1);
+}
+function sliceWav(t0, t1){
+  const ab = S.ab; if (!ab) return null;
+  const a = Math.max(0, Math.floor(t0 * ab.sampleRate)), b = Math.min(ab.length, Math.ceil(t1 * ab.sampleRate)); if (b <= a) return null;
+  const ch = Math.min(2, ab.numberOfChannels), out = { length: b - a, sampleRate: ab.sampleRate, numberOfChannels: ch, getChannelData: c => ab.getChannelData(c).subarray(a, b) };
+  return encodeWav(out, ch);
+}
+const mb = n => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
 
 /* ---------- media: local audio or YouTube ---------- */
 let yt = null, ytReady = false, ytVid = null, ytReadyWait = [];
@@ -622,6 +654,7 @@ function cardHtml(c){
       <button class="ab${rowMode === 'adj' ? ' on' : ''}" data-a="adj">调整起止</button>
       <button class="ab${rowMode === 'split' || rowMode === 'word' ? ' on' : ''}" data-a="edit">编辑</button>
       ${P.hide ? '<button class="ab" data-a="reveal">看文字</button>' : ''}
+      ${S.ab ? '<button class="ab" data-a="wav">导出这句音频</button>' : ''}
       <span class="tt"></span>
     </div>${sub}</div>`;
 }
@@ -759,8 +792,9 @@ $('keychange2').addEventListener('click', () => { showStart(true); syncKeyUI(tru
 $('keydel').addEventListener('click', () => { if (confirm('从这台设备上删除 API key？以后要用时再重新填。')) { setKey(''); setStatus('API key 已从这台设备删除。'); } });
 
 /* ---------- transcription ---------- */
-const API = 'https://api.elevenlabs.io/v1/speech-to-text';
+const API = window.__CL_API || 'https://api.elevenlabs.io/v1/speech-to-text';
 const MODELS = ['scribe_v3', 'scribe_v2'];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 function friendly(status, detail){
   if (status === 401 || /api key|unauthor/i.test(detail)) return /key id/i.test(detail) ? '填的是 key 的编号，不是 key 本身。真正的 key 以 sk_ 开头，回 ElevenLabs 新建一个再填。' : 'API key 不对或已失效。到「设置」里更换一个。';
   if (status === 402 || /quota|credit|insufficient/i.test(detail)) return 'ElevenLabs 的额度不够了。可以到 ElevenLabs 后台看用量，或下个月额度重置后再用。';
@@ -768,38 +802,152 @@ function friendly(status, detail){
   if (status === 429) return '请求太频繁，等一分钟再试。';
   return '转写失败（' + status + '）：' + (detail || '没有更多信息');
 }
-async function transcribe(src){
-  const key = getKey(); let last = '';
-  for (const model of MODELS) {
-    const fd = new FormData();
-    fd.append('model_id', model);
-    if (src.url) fd.append('source_url', src.url); else fd.append('file', src.file, src.file.name);
-    fd.append('timestamps_granularity', 'word'); fd.append('diarize', 'true'); fd.append('tag_audio_events', 'true');
-    const t0 = Date.now(); let res;
-    try { res = await fetch(API, { method:'POST', headers:{ 'xi-api-key': key }, body: fd }); }
-    catch (e) {
-      if (Date.now() - t0 > 45000) throw new Error('等了 ' + Math.round((Date.now() - t0) / 1000) + ' 秒后连接被断开了。多半是视频太长（建议 10 分钟以内），或网络、代理不稳。');
-      throw new Error('连不上 ElevenLabs。检查网络或代理（打开 api.elevenlabs.io 能看到英文提示就是通的），再试一次。');
+async function detailOf(res){ try { const j = await res.json(); const d = j.detail ?? j; return typeof d === 'string' ? d : (d.message || d.status || JSON.stringify(d)); } catch (e) { return ''; } }
+const unwrap = j => j && (j.transcription || (j.data && j.data.transcription) || j.transcript || j);
+const isDone = j => { const u = unwrap(j); return !!(u && (Array.isArray(u.words) || Array.isArray(u.transcripts) || Array.isArray(u.segments))); };
+
+/* 进行中的任务记在本机：网络断了、页面关了，下次打开还能接着取，不用重新上传和付费 */
+const PENDK = 'chunkloop:pending';
+const getPending = () => { try { return JSON.parse(localStorage.getItem(PENDK) || '[]'); } catch (e) { return []; } };
+const setPending = list => { try { localStorage.setItem(PENDK, JSON.stringify(list)); } catch (e) {} };
+const addPending = job => setPending(getPending().filter(j => j.id !== job.id).concat([job]));
+const dropPending = id => setPending(getPending().filter(j => j.id !== id));
+const asyncBroken = () => { try { return localStorage.getItem('chunkloop:nosync') === '1'; } catch (e) { return false; } };
+
+function submit(src, model, useAsync, hooks){
+  const fd = new FormData();
+  fd.append('model_id', model);
+  if (src.url) fd.append('source_url', src.url); else fd.append('file', src.file, src.file.name);
+  fd.append('timestamps_granularity', 'word'); fd.append('diarize', 'true'); fd.append('tag_audio_events', 'true');
+  if (useAsync) fd.append('webhook', 'true');
+  return new Promise((res, rej) => {                  // 用 XHR 才能拿到真实的上传进度
+    const x = new XMLHttpRequest(), t0 = performance.now();
+    x.open('POST', API); x.setRequestHeader('xi-api-key', getKey());
+    if (hooks && hooks.up) x.upload.onprogress = e => { if (e.lengthComputable) hooks.up(e.loaded, e.total, (performance.now() - t0) / 1000); };
+    x.upload.onload = () => { if (hooks && hooks.uploaded) hooks.uploaded(); };
+    x.onload = () => res({ ok: x.status >= 200 && x.status < 300, status: x.status, json: async () => JSON.parse(x.responseText || '{}') });
+    x.onerror = () => rej(new Error('network')); x.onabort = () => rej(new Error('abort'));
+    x.send(fd);
+  });
+}
+async function poll(job, onWait){
+  const t0 = Date.now(); let delay = 3000, netFails = 0, seen = false;
+  const limit = Math.max(6 * 60e3, (job.dur || 0) * 1000 * 0.6 + 4 * 60e3);
+  for (;;) {
+    await sleep(delay); delay = Math.min(15000, Math.round(delay * 1.4));
+    if (onWait) onWait(Date.now() - t0);
+    let r;
+    try { r = await fetch(API + '/transcripts/' + encodeURIComponent(job.tid), { headers:{ 'xi-api-key': getKey() } }); netFails = 0; }
+    catch (e) { if (++netFails >= 12) throw new Error('网络一直连不上。任务已经交给 ElevenLabs 了，等网络好一点重新打开这个页面，会自动接着取，不会重复收费。'); continue; }
+    if (r.ok) {
+      const j = await r.json().catch(() => ({}));
+      if (isDone(j)) return unwrap(j);
+      seen = true;
+      if (j.status && /fail|error/i.test(j.status)) throw new Error('ElevenLabs 处理失败：' + (j.message || j.status));
+      continue;
     }
-    if (res.ok) return await res.json();
-    let detail = ''; try { const j = await res.json(); const d = j.detail ?? j; detail = typeof d === 'string' ? d : (d.message || d.status || JSON.stringify(d)); } catch (e) {}
-    if ((res.status === 400 || res.status === 422) && /model/i.test(detail) && !/download/i.test(detail) && model !== MODELS[MODELS.length - 1]) { last = detail; continue; }
-    throw new Error(friendly(res.status, detail));
+    if ([404, 202, 409, 425].includes(r.status)) {
+      if (Date.now() - t0 > limit) {
+        if (!seen) { try { localStorage.setItem('chunkloop:nosync', '1'); } catch (e) {} }
+        throw new Error('ElevenLabs 收下了任务，但一直取不到结果。以后会改用直接等待的方式；请再点一次开始。');
+      }
+      continue;
+    }
+    throw new Error(friendly(r.status, await detailOf(r)));
+  }
+}
+async function transcribe(src, job, hooks){
+  hooks = hooks || {};
+  let last = '';
+  for (const model of MODELS) {
+    let useAsync = !asyncBroken();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const t0 = Date.now(); let res;
+      try { res = await submit(src, model, useAsync, hooks); }
+      catch (e) {
+        if (Date.now() - t0 > 45000) throw new Error('上传或等待了 ' + Math.round((Date.now() - t0) / 1000) + ' 秒后连接断开了。网络太慢时，建议先把视频转成音频再拖进来，或用 10 分钟以内的片段。');
+        throw new Error('连不上 ElevenLabs。检查网络或代理（打开 api.elevenlabs.io 能看到英文提示就是通的），再试一次。');
+      }
+      if (res.ok) {
+        const j = await res.json().catch(() => ({}));
+        if (isDone(j)) return unwrap(j);
+        const tid = j.transcription_id || j.id || j.request_id;
+        if (useAsync && tid) {
+          const pj = { ...job, tid, when: Date.now() }; addPending(pj); if (hooks.accepted) hooks.accepted();
+          const out = await poll(pj, hooks.wait); dropPending(job.id); return out;
+        }
+        throw new Error('ElevenLabs 的回应看不懂，请再试一次。');
+      }
+      const detail = await detailOf(res);
+      if (useAsync && (res.status === 400 || res.status === 422) && /webhook/i.test(detail)) { useAsync = false; try { localStorage.setItem('chunkloop:nosync', '1'); } catch (e) {} continue; }
+      if ((res.status === 400 || res.status === 422) && /model/i.test(detail) && !/download/i.test(detail) && model !== MODELS[MODELS.length - 1]) { last = detail; break; }
+      throw new Error(friendly(res.status, detail));
+    }
   }
   throw new Error('转写失败：' + last);
 }
-let busyT = 0;
-function busy(on, what){
-  clearInterval(busyT); $('go').disabled = !!on;
-  if (!on) { $('busy').hidden = true; return; }
-  const t0 = Date.now(), b = $('busy'); b.hidden = false;
-  const draw = () => { b.textContent = `正在转写${what || ''}…已经 ${Math.round((Date.now() - t0) / 1000)} 秒。几分钟的视频一般要几十秒，别关页面。`; };
-  draw(); busyT = setInterval(draw, 1000);
+/* ---------- progress panel ---------- */
+const PG = { on:false, title:'', steps:[], timer:0, async:false };
+const STEPS = { read:'读取视频信息', extract:'抽出声音', upload:'上传声音', send:'把链接交给 ElevenLabs', wait:'ElevenLabs 转写', tidy:'整理成句子' };
+const secs = ms => { const t = Math.max(0, Math.round(ms / 1000)); return t < 60 ? t + ' 秒' : Math.floor(t / 60) + ' 分 ' + (t % 60) + ' 秒'; };
+const rateTxt = bps => bps >= 1048576 ? (bps / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(bps / 1024)) + ' KB';
+function pgStart(title, keys){
+  PG.on = true; PG.title = title; PG.async = false; PG.steps = keys.map(k => ({ k, state:'todo', detail:'', pct:null, t0:0 }));
+  $('go').disabled = true; clearInterval(PG.timer); PG.timer = setInterval(pgDraw, 1000); pgDraw();
 }
+function pgSet(k, state, detail, pct){
+  const st = PG.steps.find(x => x.k === k); if (!st) return;
+  if (state === 'on') { PG.steps.forEach(x => { if (PG.steps.indexOf(x) < PG.steps.indexOf(st) && x.state !== 'done') x.state = 'done'; }); if (st.state !== 'on') st.t0 = Date.now(); }
+  st.state = state; if (detail != null) st.detail = detail; if (pct !== undefined) st.pct = pct; pgDraw();
+}
+function pgEnd(){ PG.on = false; clearInterval(PG.timer); $('busy').hidden = true; $('go').disabled = false; }
+function pgDraw(){
+  if (!PG.on) return;
+  const b = $('busy'); b.hidden = false;
+  let h = `<div class="pgt">${esc(PG.title)}</div>`;
+  PG.steps.forEach(st => {
+    const ic = st.state === 'done' ? '✓' : st.state === 'on' ? '●' : '○';
+    let d = st.detail;
+    if (st.state === 'on' && st.k === 'wait') d = '已等 ' + secs(Date.now() - st.t0) + (st.detail ? ' · ' + st.detail : '');
+    h += `<div class="pgs ${st.state}"><span class="pgi">${ic}</span><span>${STEPS[st.k]}</span>${d ? `<span class="pgd">${esc(d)}</span>` : ''}</div>`;
+    if (st.state === 'on' && st.pct != null) h += `<div class="pgbar"><i style="width:${(st.pct * 100).toFixed(1)}%"></i></div>`;
+  });
+  const w = PG.steps.find(x => x.k === 'wait');
+  if (w && w.state === 'on') h += `<div class="pgn">${PG.async ? '任务已交给 ElevenLabs：网络断了或页面关了都没关系，下次打开会自动接着取，不会重复收费。' : 'ElevenLabs 转完后会一次传回来，请先别关页面。'}</div>`;
+  b.innerHTML = h;
+}
+const guess = d => d ? '粗估 ' + secs(Math.max(20, d / 12) * 1000) + ' 左右' : '';
+function trHooks(){
+  return {
+    up: (loaded, total, el) => { const r = loaded / Math.max(0.3, el); pgSet('upload', 'on', `${mb(loaded)} / ${mb(total)} · 每秒 ${rateTxt(r)} · 约剩 ${secs((total - loaded) / Math.max(1, r) * 1000)}`, loaded / total); },
+    uploaded: () => pgSet('wait', 'on', guess(S.dur), null),
+    accepted: () => { PG.async = true; const w = PG.steps.find(x => x.k === 'wait'); if (w && w.state === 'todo') pgSet('wait', 'on', guess(S.dur), null); else pgDraw(); },
+    wait: () => {}
+  };
+}
+
 const LONG = 600;
 function longOk(){
   if (!S.dur || S.dur <= LONG) return true;
-  return confirm(`这个视频有 ${Math.round(S.dur / 60)} 分钟。长视频转写要好几分钟，网络或代理容易中途断开，可能扣了费却拿不到结果。建议用 10 分钟以内的视频。\n\n仍要继续吗？`);
+  return confirm(`这个视频有 ${Math.round(S.dur / 60)} 分钟，转写大约要花 ${(S.dur / 3600 * 0.2).toFixed(2)} 美元，可能要等几分钟。转好之后会存在本机，以后打开不再收费。\n\n继续吗？`);
+}
+async function resumePending(){
+  const list = getPending(); if (!list.length || !getKey()) return;
+  for (const job of list) {
+    if (Date.now() - job.when > 24 * 3600e3) { dropPending(job.id); continue; }
+    pgStart('接着取回上次的转写：' + (job.title || job.name || ''), ['wait', 'tidy']); PG.async = true; pgSet('wait', 'on', '', null);
+    try {
+      const out = await poll(job); dropPending(job.id);
+      pgSet('tidy', 'on', '', null);
+      const words = normalizeScribe(out); if (!words.length) continue;
+      saveTx(job.id, job.meta, words);
+      if (!S.words.length) {
+        if (job.meta.kind === 'yt') { openYouTube(job.meta.vid); loadWords(words, job.id, job.meta.title, job.meta.url); }
+        else { showStart(true); drawRecent(); setStatus('上次的转写已经取回：<b>' + esc(job.meta.name) + '</b>。把这个文件再拖进来就能播放，不会再收费。'); }
+      } else drawRecent();
+    } catch (e) { showErr(e.message); }
+    finally { pgEnd(); }
+  }
 }
 
 /* ---------- transcript cache and recent list ---------- */
@@ -856,21 +1004,25 @@ async function goUrl(){
   if (!cached && !getKey()) { syncKeyUI(true); showErr('先在下面填上 ElevenLabs 的 API key。'); $('key').focus(); return; }
   openYouTube(vid);
   if (cached) { loadWords(cached.words, id, cached.meta && cached.meta.title, url); return; }
-  clearList(); busy(true, ' （先看看视频多长）');
+  clearList(); pgStart('正在转写 YouTube 视频', ['read', 'send', 'wait', 'tidy']); pgSet('read', 'on', '', null);
   const titleP = ytTitle(url);
   await waitYT(8000);
-  if (ytVid !== vid) { busy(false); return; }
-  if (!longOk()) { busy(false); dropYT(); MP.kind = null; return; }
-  busy(true);
+  if (ytVid !== vid) { pgEnd(); return; }
+  if (!longOk()) { pgEnd(); dropYT(); MP.kind = null; return; }
   try {
-    const o = await transcribe({ url });
+    const t1 = (await Promise.race([titleP, sleep(1500).then(() => '')])) || '';
+    if (t1) PG.title = '正在转写：' + t1;
+    pgSet('read', 'done', S.dur ? '时长 ' + fmtShort(S.dur) + ' · 约 ' + (S.dur / 3600 * 0.2).toFixed(2) + ' 美元' : '');
+    pgSet('send', 'on', '只发一个网址，ElevenLabs 自己去下载，不占你的网速', null);
+    const o = await transcribe({ url }, { id, dur:S.dur, title:t1, meta:{ kind:'yt', vid, url, title:t1 } }, trHooks());
+    pgSet('tidy', 'on', '', null);
     const words = normalizeScribe(o);
     if (!words.length) throw new Error('转写结果里没有文字，这个视频可能没有人声。');
     const title = await titleP;
     saveTx(id, { kind:'yt', vid, url, title }, words);
     if (ytVid === vid) loadWords(words, id, title, url);
   } catch (e) { if (ytVid === vid) dropYT(); MP.kind = null; showStart(true); showErr(e.message); }
-  finally { busy(false); }
+  finally { pgEnd(); }
 }
 $('go').addEventListener('click', goUrl);
 $('url').addEventListener('keydown', e => { if (e.key === 'Enter') goUrl(); });
@@ -891,15 +1043,25 @@ async function handleFiles(files){
   clearList();
   if (!await loadAudio(f)) return;
   if (!longOk()) return;
-  busy(true, ' ' + f.name);
+  let up = f;
+  pgStart('正在转写：' + f.name, ['extract', 'upload', 'wait', 'tidy']); pgSet('extract', 'on', '', null);
+  try { const w = await compactAudio(); if (w && w.size < f.size) up = new File([w], f.name.replace(/\.[^.]+$/, '') + '.wav', { type:'audio/wav' }); } catch (e) {}
+  if (up === f && f.size > BIG) {
+    pgEnd(); showStart(true);
+    showErr('这个文件有 ' + mb(f.size) + '，太大了，网页没法自己把声音抽出来，直接上传整个文件又太慢、容易中途失败。请先只导出声音：Mac 用 QuickTime Player 打开 → 文件 → 导出为 → 仅音频；iPhone 用快捷指令。然后把导出的音频拖进来；电影本身照样拖进来负责播放画面。');
+    return;
+  }
+  pgSet('extract', 'done', up !== f ? '原文件 ' + mb(f.size) + ' → 只传 ' + mb(up.size) : '直接上传原文件 ' + mb(f.size));
+  pgSet('upload', 'on', '0 / ' + mb(up.size), 0);
   try {
-    const o = await transcribe({ file: f });
+    const o = await transcribe({ file: up }, { id, dur:S.dur, name:f.name, meta:{ kind:'file', name:f.name } }, trHooks());
+    pgSet('tidy', 'on', '', null);
     const words = normalizeScribe(o);
     if (!words.length) throw new Error('转写结果里没有文字，这个文件可能没有人声。');
     saveTx(id, { kind:'file', name: f.name }, words);
     loadWords(words, id, f.name);
   } catch (e) { showStart(true); showErr(e.message); }
-  finally { busy(false); }
+  finally { pgEnd(); }
 }
 function showStart(open){ $('start').hidden = !open; if (open) drawRecent(); }
 $('againBtn').addEventListener('click', () => { showErr(''); showStart(true); $('url').value = ''; $('url').focus(); window.scrollTo(0, 0); });
@@ -951,6 +1113,7 @@ $('list').addEventListener('click', e => {
     else if (a === 'whole') { c.flag = !c.flag; save(); updateAsk(); }
     else if (a === 'merge') { mergeNext(c); rowMode = 'split'; select(c, true); return; }
     else if (a === 'reveal') { r.classList.toggle('reveal'); return; }
+    else if (a === 'wav') { const w = sliceWav(cStart(c), cEnd(c)); if (w) { const u = document.createElement('a'); u.href = URL.createObjectURL(w); u.download = baseName() + ' ' + fmt(cStart(c)).replace(':', '-') + '.wav'; document.body.appendChild(u); u.click(); setTimeout(() => { URL.revokeObjectURL(u.href); u.remove(); }, 1000); } return; }
     select(c, true); return;
   }
   if (t.closest('.card')) return;
@@ -1036,7 +1199,7 @@ function buildSrt(bySentence){
   else items = S.chunks;
   return items.map((c, k) => { const s = Math.max(0, S.words[c.w0].s + c.sa), e = Math.max(s + 0.05, S.words[c.w1].e + c.ea); return `${k + 1}\n${srtTime(s)} --> ${srtTime(e)}\n${textOf(c.w0, c.w1)}\n`; }).join('\n');
 }
-const baseName = () => (S.title || S.jsonName || 'chunk-loop').replace(/\.json$/i, '').replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 60);
+const baseName = () => (S.title || S.jsonName || 'chunk-loop').replace(/\.(json|wav|m4a|mp3|mp4|mov|aac|webm|ogg|flac)$/i, '').replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 60);
 $('exproj').addEventListener('click', () => { if (S.words.length) download(baseName() + '.chunkloop.json', JSON.stringify(snapshot(true), null, 1), 'application/json'); });
 $('exsrtc').addEventListener('click', () => { if (S.words.length) download(baseName() + '.chunks.srt', buildSrt(false), 'text/plain'); });
 $('exsrts').addEventListener('click', () => { if (S.words.length) download(baseName() + '.sentences.srt', buildSrt(true), 'text/plain'); });
@@ -1057,9 +1220,10 @@ document.addEventListener('keydown', e => {
   if (cur && k === 'f') { cur.flag = !cur.flag; save(); updateAsk(); select(cur, true); }
 });
 
-window.__cl = { S, P, play, MP, AZ, segment, normalizeScribe, cStart, cEnd, buildSrt, buildAsk, parseAnswer, loopChunk, stop, sel:() => sel, ytId };
+window.__cl = { S, P, play, MP, AZ, getPending, compactAudio, sliceWav, segment, normalizeScribe, cStart, cEnd, buildSrt, buildAsk, parseAnswer, loopChunk, stop, sel:() => sel, ytId };
 loadSettings(); syncKeyUI(); showStart(true);
 if (location.protocol === 'file:') $('localnote').hidden = false;
+resumePending();
 </script>
 </body>
 </html>
