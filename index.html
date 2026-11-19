@@ -47,6 +47,9 @@ body:not(.loaded) .needs{display:none !important}
 #status{color:var(--mute);font-size:12.5px;min-height:0;margin-top:8px}
 #status:empty{display:none}
 .warn{color:var(--acc)}
+#banner{margin:8px 0;padding:10px 12px;border-radius:10px;background:var(--acc-soft);font-size:14px;line-height:1.6}
+#banner .bbtn{display:inline-block;margin:0 8px;padding:4px 12px;border-radius:8px;background:var(--acc);color:#fff;cursor:pointer;font-weight:600}
+#banner .bsub{display:block;font-size:12px;opacity:.75}
 #err{margin:10px 0;padding:10px 14px;border-radius:10px;border:1px solid var(--acc);color:var(--acc);font-size:14px}
 #busy{margin:10px 0;padding:12px 16px;border-radius:12px;background:var(--panel);border:1px solid var(--line);font-size:14px;max-width:760px}
 .pgt{font-weight:600;margin-bottom:6px}
@@ -181,6 +184,7 @@ main.onlyflag .spk{display:none}
 <div class="wrap">
   <div id="status"></div>
   <div id="err" hidden></div>
+  <div id="banner" hidden></div>
   <div id="busy" hidden></div>
   <section id="start">
     <div class="srow">
@@ -383,7 +387,6 @@ const AZ = (() => {
   return { analyze, norm };
 })();
 if (typeof module !== 'undefined') module.exports = AZ;
-
 'use strict';
 /* ---------- state ---------- */
 const S = { words:[], chunks:[], marks:new Set(), notes:{}, dur:0, jsonName:'', audioName:'', title:'', url:'', precise:false, restored:false, ab:null };
@@ -554,6 +557,62 @@ function sliceWav(t0, t1){
 }
 const mb = n => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
 
+/* ---------- 在浏览器里存一份声音，下次从历史打开直接能放 ---------- */
+const isVidName = n => /\.(mp4|mov|m4v|webm)$/i.test(n || '');
+const MDB = { db:null, max:8 };
+function mdbOpen(){
+  if (MDB.db) return Promise.resolve(MDB.db);
+  return new Promise((res, rej) => {
+    if (!window.indexedDB) return rej(new Error('no idb'));
+    const r = indexedDB.open('chunkloop', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('media');
+    r.onsuccess = () => { MDB.db = r.result; res(MDB.db); }; r.onerror = () => rej(r.error);
+  });
+}
+async function mdb(mode, fn){
+  const db = await mdbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('media', mode), st = tx.objectStore('media'); let out;
+    const q = fn(st); if (q) q.onsuccess = () => { out = q.result; };
+    tx.oncomplete = () => res(out); tx.onerror = tx.onabort = () => rej(tx.error);
+  });
+}
+const mediaGet = id => mdb('readonly', st => st.get(id)).catch(() => null);
+const mediaList = () => mdb('readonly', st => st.getAll()).catch(() => []);
+async function keepMedia(id, file){             // 不阻塞界面，失败就算了（下次再选一次文件即可）
+  try {
+    const have = await mediaGet(id); if (have && have.blob) return;
+    let blob = null, name = file.name, type = file.type;
+    if (!isVidName(file.name) && !/^video\//.test(file.type) && file.size <= 150 * 1048576) blob = file;   // 音频文件：原样存
+    else if (S.ab) {                              // 视频：只存一份 22 kHz 单声道的声音（约 2.6 MB/分钟）
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext; if (!OAC) return;
+      const sr = 22050, ab = S.ab, oc = new OAC(1, Math.max(1, Math.ceil(ab.duration * sr)), sr);
+      const src = oc.createBufferSource(); src.buffer = ab; src.connect(oc.destination); src.start();
+      blob = encodeWav(await oc.startRendering(), 1); name = file.name.replace(/\.[^.]+$/, '') + '.wav'; type = 'audio/wav';
+    }
+    if (!blob || blob.size > 200 * 1048576) return;
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+    const all = (await mediaList()).sort((a, b) => b.when - a.when);
+    const drop = all.slice(MDB.max - 1).map(x => x.id);
+    await mdb('readwrite', st => { drop.forEach(k => st.delete(k)); st.put({ id, blob, name, type, video: isVidName(file.name) || /^video\//.test(file.type), when: Date.now() }, id); });
+  } catch (e) {}
+}
+function setBanner(html){ const b = $('banner'); b.innerHTML = html || ''; b.hidden = !html; }
+const SAFE = '只在你电脑里打开，<b>不会上传、不会收费</b>';
+function askFile(kind){
+  setBanner(kind === 'video'
+    ? `现在只放声音。想看画面（口型、表情）？<label class="bbtn">再选一次视频<input type="file" accept="video/*,.mp4,.mov,.m4v,.webm" hidden></label><span class="bsub">${SAFE}</span>`
+    : `这段的声音没存在这个浏览器里（换了电脑、浏览器，或被清理了）。<label class="bbtn">选择原文件<input type="file" accept="audio/*,video/*" hidden></label><span class="bsub">${SAFE}</span>`);
+}
+$('banner').addEventListener('change', async e => {
+  const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return;
+  showErr('');
+  const ok = await loadAudio(f); if (!ok) return;
+  setBanner('');
+  if (S.words.length && S.dur && S.words[S.words.length - 1].e > S.dur + 1.5) showErr('这个文件比文字短，可能选错了文件，再选一次试试。');
+  else keepMedia(S.jsonName, f);
+});
+
 /* ---------- media: local audio or YouTube ---------- */
 let yt = null, ytReady = false, ytVid = null, ytReadyWait = [];
 const MP = {
@@ -622,7 +681,7 @@ function stop(){
   MP.pause(); play.kind = null; play.ref = null; play.item = null; paintActive();
 }
 function loop(kind, ref, item, getRange){
-  if (!MP.ok()) { showErr(MP.kind === 'yt' ? '视频还在加载，稍等一下再点。' : '还没有音频：把对应的原音频也拖进来。'); return; }
+  if (!MP.ok()) { showErr(MP.kind === 'yt' ? '视频还在加载，稍等一下再点。' : '这段还没有声音：点上面的按钮选一下原文件（只在你电脑里打开，不会上传、不会收费）。'); return; }
   showErr(''); stop();
   const tok = ++play.tok; play.kind = kind; play.ref = ref; play.item = item; play.count = 0;
   const start = () => { if (tok !== play.tok) return; MP.seekPlay(getRange()[0], P.rate); play.count++; paintActive(); tick(); };
@@ -735,7 +794,6 @@ function showStatus(){
   $('title').innerHTML = S.words.length ? `<b>${esc(S.title || S.jsonName)}</b>${S.dur ? ' · ' + fmtShort(S.dur) : ''}` : '';
   const parts = [];
   if (S.words.length && MP.kind === 'yt' && !ytReady) parts.push('视频加载中…');
-  if (S.words.length && !MP.kind) parts.push('<span class="warn">还缺原音频，把文件拖进来才能播放</span>');
   if (MP.kind === 'audio' && S.dur && !S.precise && !S.isVideo) parts.push('文件较长，循环边界可能有几十毫秒误差');
   if (S.restored) parts.push('已恢复上次的标记和修改');
   if (MP.kind === 'audio' && S.words.length && S.dur && S.words[S.words.length - 1].e > S.dur + 1.5) parts.push('<span class="warn">文字比音频长，这两个文件可能不是同一段</span>');
@@ -778,7 +836,7 @@ function syncControls(){
   $('list').classList.toggle('hide', P.hide); $('list').classList.toggle('onlyflag', P.onlyflag);
 }
 function loadWords(words, id, title, url){
-  saveNow(); stop(); azCache.clear();
+  saveNow(); stop(); azCache.clear(); setBanner('');
   S.words = words; S.jsonName = id; S.title = title || ''; S.url = url || ''; S.marks = new Set(); S.notes = {}; S.chunks = segment(words); S.restored = false; sel = null;
   try { const saved = JSON.parse(localStorage.getItem(storeKey()) || 'null'); if (saved && applySnapshot(saved)) S.restored = true; } catch (e) {}
   render(); showStart(false); showStatus(); window.scrollTo(0, 0);
@@ -971,7 +1029,7 @@ async function resumePending(){
       saveTx(job.id, job.meta, words);
       if (!S.words.length) {
         if (job.meta.kind === 'yt') { openYouTube(job.meta.vid); loadWords(words, job.id, job.meta.title, job.meta.url); }
-        else { showStart(true); drawRecent(); setStatus('上次的转写已经取回：<b>' + esc(job.meta.name) + '</b>。把这个文件再拖进来就能播放，不会再收费。'); }
+        else { showStart(true); drawRecent(); setStatus('上次的转写已经取回：<b>' + esc(job.meta.name) + '</b>。点它，再选一次这个文件就能播放（只在你电脑里打开，不会上传、不会收费）。'); }
       } else drawRecent();
     } catch (e) { showErr(e.message); }
     finally { pgEnd(); }
@@ -1001,9 +1059,23 @@ $('recent').addEventListener('click', e => {
   const it = e.target.closest('.ri'); if (!it) return;
   const r = getRecent().find(x => x.id === it.dataset.id), tx = getTx(it.dataset.id); if (!r || !tx) return;
   showErr('');
-  if (r.kind === 'yt') { openYouTube(r.vid); loadWords(tx.words, r.id, r.title, r.url); }
-  else { stop(); dropYT(); clearLocalMedia(); MP.kind = null; S.dur = 0; S.audioName = ''; loadWords(tx.words, r.id, r.title || r.name); }
+  if (r.kind === 'yt') { openYouTube(r.vid); loadWords(tx.words, r.id, r.title, r.url); return; }
+  openFileItem(r, tx);
 });
+async function openFileItem(r, tx){
+  const m = await mediaGet(r.id);
+  if (m && m.blob) {
+    showStart(false); setStatus('正在打开存好的声音…');
+    const ok = await loadAudio(new File([m.blob], m.name, { type: m.type || m.blob.type }));
+    loadWords(tx.words, r.id, r.title || r.name);
+    if (!ok) askFile('audio');
+    else if (m.video || r.video || isVidName(r.name)) askFile('video');
+    return;
+  }
+  stop(); dropYT(); clearLocalMedia(); MP.kind = null; S.dur = 0; S.audioName = '';
+  loadWords(tx.words, r.id, r.title || r.name);
+  askFile('audio');
+}
 
 /* ---------- YouTube link ---------- */
 function ytId(raw){
@@ -1064,9 +1136,9 @@ async function handleFiles(files){
   if (js.length) { loadJsonText(await js[0].text(), js[0].name); if (au.length) await loadAudio(au[0]); showStart(!S.words.length); return; }
   const f = au[0], id = 'file-' + f.name + '-' + f.size;
   const pairing = S.words.length && (S.jsonName === id || (!S.jsonName.startsWith('yt-') && !S.jsonName.startsWith('file-') && !(MP.kind === 'audio' && S.dur)));
-  if (pairing) { await loadAudio(f); return; }
+  if (pairing) { if (await loadAudio(f)) { setBanner(''); if (S.jsonName === id) keepMedia(id, f); } return; }
   const cached = getTx(id);
-  if (cached) { if (await loadAudio(f)) loadWords(cached.words, id, f.name); return; }
+  if (cached) { if (await loadAudio(f)) { loadWords(cached.words, id, f.name); keepMedia(id, f); } return; }
   if (!getKey()) { showStart(true); syncKeyUI(true); showErr('要自动转写这个文件，先在下面填上 ElevenLabs 的 API key。'); return; }
   clearList();
   if (!await loadAudio(f)) return;
@@ -1086,8 +1158,9 @@ async function handleFiles(files){
     pgSet('tidy', 'on', '', null);
     const words = normalizeScribe(o);
     if (!words.length) throw new Error('转写结果里没有文字，这个文件可能没有人声。');
-    saveTx(id, { kind:'file', name: f.name }, words);
+    saveTx(id, { kind:'file', name: f.name, video: isVidName(f.name) || /^video\//.test(f.type) }, words);
     loadWords(words, id, f.name);
+    keepMedia(id, f);
   } catch (e) { showStart(true); showErr(e.message); }
   finally { pgEnd(); }
 }
