@@ -48,8 +48,10 @@ body:not(.loaded) .needs{display:none !important}
 #status:empty{display:none}
 .warn{color:var(--acc)}
 #banner{margin:8px 0;padding:10px 12px;border-radius:10px;background:var(--acc-soft);font-size:14px;line-height:1.6}
-#banner .bbtn{display:inline-block;margin:0 8px;padding:4px 12px;border-radius:8px;background:var(--acc);color:#fff;cursor:pointer;font-weight:600}
+#banner .bbtn{display:inline-block;border:none;font-size:14px;font-family:inherit;margin:0 8px;padding:4px 12px;border-radius:8px;background:var(--acc);color:#fff;cursor:pointer;font-weight:600}
 #banner .bsub{display:block;font-size:12px;opacity:.75}
+#banner.flash{animation:bflash .9s ease 2}
+@keyframes bflash{50%{box-shadow:0 0 0 3px var(--acc)}}
 #err{margin:10px 0;padding:10px 14px;border-radius:10px;border:1px solid var(--acc);color:var(--acc);font-size:14px}
 #busy{margin:10px 0;padding:12px 16px;border-radius:12px;background:var(--panel);border:1px solid var(--line);font-size:14px;max-width:760px}
 .pgt{font-weight:600;margin-bottom:6px}
@@ -74,6 +76,10 @@ body:not(.loaded) .needs{display:none !important}
 #recent .ri:hover .rt{color:var(--acc)}
 #recent .rt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #recent .rm{font-size:12px;color:var(--mute);white-space:nowrap}
+#recent .rx{border:1px solid var(--line);background:transparent;color:var(--mute);font-size:12px;padding:2px 8px;border-radius:6px;cursor:pointer;white-space:nowrap}
+#recent .rx:hover{color:var(--acc);border-color:var(--acc)}
+#recent .rmore{padding:6px 0;border-top:1px solid var(--line)}
+@media (max-width:600px){#recent .ri{flex-wrap:wrap}#recent .rt{flex-basis:100%}#recent .rm{flex:1}}
 .layout{display:grid;grid-template-columns:minmax(0,1fr);gap:24px;margin-top:8px}
 body.has-video .layout{grid-template-columns:minmax(0,1fr) 380px}
 aside{position:sticky;top:64px;align-self:start}
@@ -557,60 +563,133 @@ function sliceWav(t0, t1){
 }
 const mb = n => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
 
-/* ---------- 在浏览器里存一份声音，下次从历史打开直接能放 ---------- */
-const isVidName = n => /\.(mp4|mov|m4v|webm)$/i.test(n || '');
-const MDB = { db:null, max:8 };
-function mdbOpen(){
-  if (MDB.db) return Promise.resolve(MDB.db);
+/* ---------- 浏览器里的大柜子（IndexedDB）：文字、声音、视频、文件位置。不自动删除，删不删由用户决定 ---------- */
+const isVidName = n => /\.(mp4|mov|m4v|webm|mkv)$/i.test(n || '');
+const isVidFile = f => isVidName(f.name) || /^video\//.test(f.type);
+const VMAX = 2 * 1073741824;                    // 2 GB 以内的视频连画面一起存
+const STORES = ['media', 'tx', 'video', 'handle'];
+const DB = { db:null, tx:new Map(), size:{ media:new Map(), video:new Map() }, handles:new Map(), ok:false };
+function dbOpen(){
+  if (DB.db) return Promise.resolve(DB.db);
   return new Promise((res, rej) => {
     if (!window.indexedDB) return rej(new Error('no idb'));
-    const r = indexedDB.open('chunkloop', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('media');
-    r.onsuccess = () => { MDB.db = r.result; res(MDB.db); }; r.onerror = () => rej(r.error);
+    const r = indexedDB.open('chunkloop', 2);
+    r.onupgradeneeded = () => STORES.forEach(n => { if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n); });
+    r.onsuccess = () => { DB.db = r.result; res(DB.db); }; r.onerror = () => rej(r.error); r.onblocked = () => rej(new Error('blocked'));
   });
 }
-async function mdb(mode, fn){
-  const db = await mdbOpen();
+async function dbDo(store, mode, fn){
+  const db = await dbOpen();
   return new Promise((res, rej) => {
-    const tx = db.transaction('media', mode), st = tx.objectStore('media'); let out;
+    const tx = db.transaction(store, mode), st = tx.objectStore(store); let out;
     const q = fn(st); if (q) q.onsuccess = () => { out = q.result; };
-    tx.oncomplete = () => res(out); tx.onerror = tx.onabort = () => rej(tx.error);
+    tx.oncomplete = () => res(out); tx.onerror = tx.onabort = () => rej(tx.error || new Error('abort'));
   });
 }
-const mediaGet = id => mdb('readonly', st => st.get(id)).catch(() => null);
-const mediaList = () => mdb('readonly', st => st.getAll()).catch(() => []);
-async function keepMedia(id, file){             // 不阻塞界面，失败就算了（下次再选一次文件即可）
+const dbGet = (store, id) => dbDo(store, 'readonly', st => st.get(id)).catch(() => null);
+const dbPut = (store, id, v) => dbDo(store, 'readwrite', st => st.put(v, id));
+const dbDel = (store, id) => dbDo(store, 'readwrite', st => st.delete(id)).catch(() => {});
+async function initStore(){
   try {
-    const have = await mediaGet(id); if (have && have.blob) return;
+    await dbOpen();
+    for (const k of Object.keys(localStorage).filter(k => k.startsWith('chunkloop:tx:'))) {   // 旧版存在小空间里的文字，搬进大柜子
+      try { const v = JSON.parse(localStorage.getItem(k)); if (v) { await dbPut('tx', k.slice(13), v); localStorage.removeItem(k); } } catch (e) {}
+    }
+    await dbDo('tx', 'readonly', st => { const c = st.openCursor(); c.onsuccess = () => { const x = c.result; if (x) { DB.tx.set(x.key, x.value); x.continue(); } }; });
+    for (const n of ['media', 'video']) await dbDo(n, 'readonly', st => { const c = st.openCursor(); c.onsuccess = () => { const x = c.result; if (x) { if (x.value && x.value.blob) DB.size[n].set(x.key, x.value.blob.size); x.continue(); } }; });
+    await dbDo('handle', 'readonly', st => { const c = st.openCursor(); c.onsuccess = () => { const x = c.result; if (x) { DB.handles.set(x.key, x.value); x.continue(); } }; });
+    DB.ok = true;
+  } catch (e) { DB.ok = false; }
+}
+let persistAsked = false;
+function askPersist(){ if (persistAsked) return; persistAsked = true; if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); }
+async function roomFor(bytes){
+  try { const e = await navigator.storage.estimate(); if (e && e.quota) return e.quota - (e.usage || 0) > bytes * 1.1 + 50 * 1048576; } catch (e) {}
+  return true;
+}
+let note = '';                                  // 状态栏里的一句临时说明（存视频进度等）
+function setNote(t){ note = t || ''; showStatus(); }
+async function keepMedia(id, file){             // 声音：音频文件原样存；视频只存一份 22 kHz 单声道（约 2.6 MB/分钟）
+  try {
+    if (DB.size.media.has(id)) return;
     let blob = null, name = file.name, type = file.type;
-    if (!isVidName(file.name) && !/^video\//.test(file.type) && file.size <= 150 * 1048576) blob = file;   // 音频文件：原样存
-    else if (S.ab) {                              // 视频：只存一份 22 kHz 单声道的声音（约 2.6 MB/分钟）
+    if (!isVidFile(file) && file.size <= 300 * 1048576) blob = file;
+    else if (S.ab) {
       const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext; if (!OAC) return;
       const sr = 22050, ab = S.ab, oc = new OAC(1, Math.max(1, Math.ceil(ab.duration * sr)), sr);
       const src = oc.createBufferSource(); src.buffer = ab; src.connect(oc.destination); src.start();
       blob = encodeWav(await oc.startRendering(), 1); name = file.name.replace(/\.[^.]+$/, '') + '.wav'; type = 'audio/wav';
     }
-    if (!blob || blob.size > 200 * 1048576) return;
-    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-    const all = (await mediaList()).sort((a, b) => b.when - a.when);
-    const drop = all.slice(MDB.max - 1).map(x => x.id);
-    await mdb('readwrite', st => { drop.forEach(k => st.delete(k)); st.put({ id, blob, name, type, video: isVidName(file.name) || /^video\//.test(file.type), when: Date.now() }, id); });
+    if (!blob || !await roomFor(blob.size)) return;
+    askPersist();
+    await dbPut('media', id, { blob, name, type, video: isVidFile(file), when: Date.now() });
+    DB.size.media.set(id, blob.size); drawRecent();
   } catch (e) {}
 }
-function setBanner(html){ const b = $('banner'); b.innerHTML = html || ''; b.hidden = !html; }
-const SAFE = '只在你电脑里打开，<b>不会上传、不会收费</b>';
-function askFile(kind){
-  setBanner(kind === 'video'
-    ? `现在只放声音。想看画面（口型、表情）？<label class="bbtn">再选一次视频<input type="file" accept="video/*,.mp4,.mov,.m4v,.webm" hidden></label><span class="bsub">${SAFE}</span>`
-    : `这段的声音没存在这个浏览器里（换了电脑、浏览器，或被清理了）。<label class="bbtn">选择原文件<input type="file" accept="audio/*,video/*" hidden></label><span class="bsub">${SAFE}</span>`);
+async function keepVideo(id, file){             // 视频本身（含画面）：2 GB 以内存一份，下次直接能看
+  if (!isVidFile(file) || DB.size.video.has(id) || !S.isVideo) return;
+  if (file.size > VMAX) return;
+  if (!await roomFor(file.size)) { setNote('这台设备的空间不够，这次没把视频存进浏览器。下次打开要再选一次文件。'); return; }
+  askPersist();
+  const big = file.size > 50 * 1048576;
+  if (big) setNote('正在把视频存进浏览器（' + mb(file.size) + '，不用网络），存好后下次从历史点开就能直接看。现在可以照常练习。');
+  try {
+    await dbPut('video', id, { blob: file, name: file.name, type: file.type, when: Date.now() });
+    DB.size.video.set(id, file.size); drawRecent();
+    if (big) setNote('视频已存好，下次从历史点开就能直接看。'), setTimeout(() => { if (note.startsWith('视频已存好')) setNote(''); }, 6000);
+  } catch (e) { setNote(big ? '视频没能存进浏览器（可能空间不够）。下次打开要再选一次文件。' : ''); }
 }
-$('banner').addEventListener('change', async e => {
-  const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return;
+async function keepHandle(id, file){            // 电脑上的 Chrome / Edge：记住文件位置，下次点一次「允许」就能打开
+  const h = fileHandles.get(file); if (!h) return;
+  try { await dbPut('handle', id, h); DB.handles.set(id, h); } catch (e) {}
+}
+function keepAll(id, file){ keepHandle(id, file); keepMedia(id, file).then(() => keepVideo(id, file)); }
+const fileHandles = new WeakMap();
+
+function setBanner(html){ const b = $('banner'); b.innerHTML = html || ''; b.hidden = !html; b.classList.remove('flash'); }
+const SAFE = '文件就在你的电脑或手机里，直接打开，<b>不用网络、不会上传、不收费</b>';
+let bannerId = null;
+function askFile(kind, id){
+  bannerId = id;
+  const vid = kind === 'video';
+  setBanner(vid
+    ? `现在只放声音。想看画面（口型、表情）？<button class="bbtn" data-k="video">打开原视频</button><span class="bsub">${SAFE}</span>`
+    : `这一条的声音没存在这个浏览器里（是旧记录，或者换了电脑、浏览器）。<button class="bbtn" data-k="audio">打开原文件</button><span class="bsub">${SAFE}。打开一次以后就会存好，下次不用再打开。</span>`);
+}
+async function useFile(f){
   showErr('');
+  const id = bannerId || S.jsonName;
   const ok = await loadAudio(f); if (!ok) return;
   setBanner('');
-  if (S.words.length && S.dur && S.words[S.words.length - 1].e > S.dur + 1.5) showErr('这个文件比文字短，可能选错了文件，再选一次试试。');
-  else keepMedia(S.jsonName, f);
+  if (S.words.length && S.dur && S.words[S.words.length - 1].e > S.dur + 1.5) { showErr('这个文件比文字短，可能打开错了文件，再选一次试试。'); return; }
+  keepAll(id, f);
+}
+async function fromHandle(h, ask){              // 用记住的文件位置打开；ask=true 时可以弹出「允许」
+  try {
+    let p = await h.queryPermission({ mode:'read' });
+    if (p !== 'granted' && ask) p = await h.requestPermission({ mode:'read' });
+    if (p !== 'granted') return null;
+    return await h.getFile();
+  } catch (e) { return null; }
+}
+async function pickFiles(accept, multiple){     // Chrome / Edge 用新的选择窗口（能记住文件位置），其他浏览器用普通的
+  if (window.showOpenFilePicker) {
+    try {
+      const hs = await window.showOpenFilePicker({ multiple: !!multiple });
+      const out = []; for (const h of hs) { const f = await h.getFile(); fileHandles.set(f, h); out.push(f); } return out;
+    } catch (e) { if (e && e.name === 'AbortError') return []; }
+  }
+  return new Promise(res => {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = accept || ''; inp.multiple = !!multiple;
+    inp.onchange = () => res([...inp.files]); inp.click();
+  });
+}
+$('banner').addEventListener('click', async e => {
+  const b = e.target.closest('.bbtn'); if (!b) return;
+  const h = bannerId && DB.handles.get(bannerId);
+  if (h) { const f = await fromHandle(h, true); if (f) { fileHandles.set(f, h); return useFile(f); } }
+  const fs = await pickFiles(b.dataset.k === 'video' ? 'video/*,.mp4,.mov,.m4v,.webm,.mkv' : 'audio/*,video/*', false);
+  if (fs[0]) useFile(fs[0]);
 });
 
 /* ---------- media: local audio or YouTube ---------- */
@@ -681,7 +760,13 @@ function stop(){
   MP.pause(); play.kind = null; play.ref = null; play.item = null; paintActive();
 }
 function loop(kind, ref, item, getRange){
-  if (!MP.ok()) { showErr(MP.kind === 'yt' ? '视频还在加载，稍等一下再点。' : '这段还没有声音：点上面的按钮选一下原文件（只在你电脑里打开，不会上传、不会收费）。'); return; }
+  if (!MP.ok()) {
+    if (MP.kind === 'yt') { showErr('视频还在加载，稍等一下再点。'); return; }
+    const b = $('banner');
+    if (!b.hidden) { b.classList.remove('flash'); void b.offsetWidth; b.classList.add('flash'); b.scrollIntoView({ block:'nearest', behavior:'smooth' }); }
+    else showErr('这一条还没有声音：把原来的音频或视频文件拖进来就能播放（不用网络、不收费）。');
+    return;
+  }
   showErr(''); stop();
   const tok = ++play.tok; play.kind = kind; play.ref = ref; play.item = item; play.count = 0;
   const start = () => { if (tok !== play.tok) return; MP.seekPlay(getRange()[0], P.rate); play.count++; paintActive(); tick(); };
@@ -796,6 +881,7 @@ function showStatus(){
   if (S.words.length && MP.kind === 'yt' && !ytReady) parts.push('视频加载中…');
   if (MP.kind === 'audio' && S.dur && !S.precise && !S.isVideo) parts.push('文件较长，循环边界可能有几十毫秒误差');
   if (S.restored) parts.push('已恢复上次的标记和修改');
+  if (note) parts.push(note);
   if (MP.kind === 'audio' && S.words.length && S.dur && S.words[S.words.length - 1].e > S.dur + 1.5) parts.push('<span class="warn">文字比音频长，这两个文件可能不是同一段</span>');
   setStatus(parts.join(' · '));
 }
@@ -1029,7 +1115,7 @@ async function resumePending(){
       saveTx(job.id, job.meta, words);
       if (!S.words.length) {
         if (job.meta.kind === 'yt') { openYouTube(job.meta.vid); loadWords(words, job.id, job.meta.title, job.meta.url); }
-        else { showStart(true); drawRecent(); setStatus('上次的转写已经取回：<b>' + esc(job.meta.name) + '</b>。点它，再选一次这个文件就能播放（只在你电脑里打开，不会上传、不会收费）。'); }
+        else { showStart(true); drawRecent(); setStatus('上次的转写已经取回：<b>' + esc(job.meta.name) + '</b>。在下面「最近转写过的」里点它，再打开一次原文件就能播放（不用网络、不收费）。'); }
       } else drawRecent();
     } catch (e) { showErr(e.message); }
     finally { pgEnd(); }
@@ -1039,42 +1125,71 @@ async function resumePending(){
 /* ---------- transcript cache and recent list ---------- */
 const RECK = 'chunkloop:recent';
 const getRecent = () => { try { return JSON.parse(localStorage.getItem(RECK) || '[]'); } catch (e) { return []; } };
-function getTx(id){ try { return JSON.parse(localStorage.getItem('chunkloop:tx:' + id) || 'null'); } catch (e) { return null; } }
+function getTx(id){
+  if (DB.tx.has(id)) return DB.tx.get(id);
+  try { return JSON.parse(localStorage.getItem('chunkloop:tx:' + id) || 'null'); } catch (e) { return null; }
+}
 function saveTx(id, meta, words){
   const rec = getRecent().filter(r => r.id !== id); rec.unshift({ id, ...meta, when: Date.now(), n: words.length });
-  const data = JSON.stringify({ meta, words });
-  for (let tries = 0; tries < 6; tries++) {
-    try { localStorage.setItem('chunkloop:tx:' + id, data); break; }
-    catch (e) { const old = rec.pop(); if (!old || old.id === id) break; try { localStorage.removeItem('chunkloop:tx:' + old.id); } catch (_) {} }
-  }
-  try { localStorage.setItem(RECK, JSON.stringify(rec.slice(0, 20))); } catch (e) {}
+  const data = { meta, words }; DB.tx.set(id, data);
+  if (DB.ok) dbPut('tx', id, data).catch(() => { try { localStorage.setItem('chunkloop:tx:' + id, JSON.stringify(data)); } catch (e) { showErr('浏览器空间满了，这次的文字没能存下来。可以在「最近转写过的」里删掉一些旧视频的画面。'); } });
+  else { try { localStorage.setItem('chunkloop:tx:' + id, JSON.stringify(data)); } catch (e) { showErr('浏览器空间满了，这次的文字没能存下来。可以在「最近转写过的」里删掉一些旧视频的画面。'); } }
+  try { localStorage.setItem(RECK, JSON.stringify(rec)); } catch (e) {}
 }
+const recSize = id => (DB.size.media.get(id) || 0) + (DB.size.video.get(id) || 0);
+let recAll = false;
 function drawRecent(){
   const rec = getRecent().filter(r => getTx(r.id)), box = $('recent');
   if (!rec.length) { box.innerHTML = ''; return; }
-  box.innerHTML = '<h3>最近转写过的（再次打开不会重复收费）</h3>' + rec.slice(0, 8).map(r =>
-    `<div class="ri" data-id="${esc(r.id)}"><span class="rt">${esc(r.title || r.name || r.id)}</span><span class="rm">${r.kind === 'yt' ? 'YouTube' : '本地文件'} · ${new Date(r.when).toLocaleDateString()}</span></div>`).join('');
+  const total = rec.reduce((a, r) => a + recSize(r.id), 0);
+  const show = recAll ? rec : rec.slice(0, 8);
+  box.innerHTML = '<h3>最近转写过的（再次打开不会重复收费）' + (total > 1048576 ? ' · 共占 ' + mb(total) : '') + '</h3>' + show.map(r => {
+    const v = DB.size.video.get(r.id), sz = recSize(r.id);
+    return `<div class="ri" data-id="${esc(r.id)}"><span class="rt">${esc(r.title || r.name || r.id)}</span>` +
+      `<span class="rm">${r.kind === 'yt' ? 'YouTube' : (DB.size.video.has(r.id) ? '视频·已存画面' : DB.size.media.has(r.id) ? '本地·已存声音' : '本地文件')} · ${new Date(r.when).toLocaleDateString()}${sz > 1048576 ? ' · ' + mb(sz) : ''}</span>` +
+      (v ? `<button class="rx" data-act="vid" title="只删画面，文字、标记和声音都留着">删画面</button>` : '') +
+      `<button class="rx" data-act="del" title="整条删除">删除</button></div>`;
+  }).join('') + (rec.length > 8 ? `<div class="rmore"><button class="link2" id="recMore">${recAll ? '收起' : '显示全部 ' + rec.length + ' 条'}</button></div>` : '');
+}
+async function deleteRec(id, onlyVideo){
+  const r = getRecent().find(x => x.id === id), name = r ? (r.title || r.name || id) : id;
+  if (onlyVideo) {
+    if (!confirm('删掉「' + name + '」存着的画面（' + mb(DB.size.video.get(id) || 0) + '）？\n文字、标记和声音都会留着，想看画面时再打开一次原视频就行。')) return;
+    await dbDel('video', id); DB.size.video.delete(id); drawRecent(); return;
+  }
+  if (!confirm('整条删除「' + name + '」？\n文字、你的标记和解释、存着的声音和画面都会删掉，删了找不回来。\n（重新转写要再花一次钱。）')) return;
+  for (const n of STORES) await dbDel(n, id);
+  DB.tx.delete(id); DB.size.media.delete(id); DB.size.video.delete(id); DB.handles.delete(id);
+  try {
+    localStorage.removeItem('chunkloop:tx:' + id);
+    Object.keys(localStorage).filter(k => k.startsWith('chunkloop:' + id + ':')).forEach(k => localStorage.removeItem(k));
+    localStorage.setItem(RECK, JSON.stringify(getRecent().filter(x => x.id !== id)));
+  } catch (e) {}
+  if (S.jsonName === id) { stop(); dropYT(); clearLocalMedia(); MP.kind = null; S.dur = 0; S.words = []; S.chunks = []; S.jsonName = ''; setBanner(''); render(); showStart(true); showStatus(); }
+  drawRecent();
 }
 $('recent').addEventListener('click', e => {
+  if (e.target.id === 'recMore') { recAll = !recAll; drawRecent(); return; }
   const it = e.target.closest('.ri'); if (!it) return;
+  const x = e.target.closest('.rx'); if (x) { deleteRec(it.dataset.id, x.dataset.act === 'vid'); return; }
   const r = getRecent().find(x => x.id === it.dataset.id), tx = getTx(it.dataset.id); if (!r || !tx) return;
-  showErr('');
+  showErr(''); setNote('');
   if (r.kind === 'yt') { openYouTube(r.vid); loadWords(tx.words, r.id, r.title, r.url); return; }
   openFileItem(r, tx);
 });
 async function openFileItem(r, tx){
-  const m = await mediaGet(r.id);
-  if (m && m.blob) {
-    showStart(false); setStatus('正在打开存好的声音…');
-    const ok = await loadAudio(new File([m.blob], m.name, { type: m.type || m.blob.type }));
-    loadWords(tx.words, r.id, r.title || r.name);
-    if (!ok) askFile('audio');
-    else if (m.video || r.video || isVidName(r.name)) askFile('video');
-    return;
+  const name = r.title || r.name, wasVid = r.video || isVidName(r.name);
+  showStart(false); setStatus('正在打开…');
+  const v = DB.size.video.has(r.id) && await dbGet('video', r.id);          // 1. 存着视频：画面和声音都直接出来
+  if (v && v.blob && await loadAudio(new File([v.blob], v.name, { type: v.type || v.blob.type }))) { loadWords(tx.words, r.id, name); return; }
+  const h = DB.handles.get(r.id);                                           // 2. 记得文件位置：点一次「允许」
+  if (h) { const f = await fromHandle(h, true); if (f) { fileHandles.set(f, h); if (await loadAudio(f)) { loadWords(tx.words, r.id, name); keepAll(r.id, f); return; } } }
+  const m = DB.size.media.has(r.id) && await dbGet('media', r.id);          // 3. 只存着声音
+  if (m && m.blob && await loadAudio(new File([m.blob], m.name, { type: m.type || m.blob.type }))) {
+    loadWords(tx.words, r.id, name); if (m.video || wasVid) askFile('video', r.id); return;
   }
-  stop(); dropYT(); clearLocalMedia(); MP.kind = null; S.dur = 0; S.audioName = '';
-  loadWords(tx.words, r.id, r.title || r.name);
-  askFile('audio');
+  stop(); dropYT(); clearLocalMedia(); MP.kind = null; S.dur = 0; S.audioName = '';   // 4. 什么都没存
+  loadWords(tx.words, r.id, name); askFile('audio', r.id);
 }
 
 /* ---------- YouTube link ---------- */
@@ -1136,9 +1251,9 @@ async function handleFiles(files){
   if (js.length) { loadJsonText(await js[0].text(), js[0].name); if (au.length) await loadAudio(au[0]); showStart(!S.words.length); return; }
   const f = au[0], id = 'file-' + f.name + '-' + f.size;
   const pairing = S.words.length && (S.jsonName === id || (!S.jsonName.startsWith('yt-') && !S.jsonName.startsWith('file-') && !(MP.kind === 'audio' && S.dur)));
-  if (pairing) { if (await loadAudio(f)) { setBanner(''); if (S.jsonName === id) keepMedia(id, f); } return; }
+  if (pairing) { if (await loadAudio(f)) { setBanner(''); if (S.jsonName === id) keepAll(id, f); } return; }
   const cached = getTx(id);
-  if (cached) { if (await loadAudio(f)) { loadWords(cached.words, id, f.name); keepMedia(id, f); } return; }
+  if (cached) { if (await loadAudio(f)) { loadWords(cached.words, id, f.name); keepAll(id, f); } return; }
   if (!getKey()) { showStart(true); syncKeyUI(true); showErr('要自动转写这个文件，先在下面填上 ElevenLabs 的 API key。'); return; }
   clearList();
   if (!await loadAudio(f)) return;
@@ -1158,9 +1273,9 @@ async function handleFiles(files){
     pgSet('tidy', 'on', '', null);
     const words = normalizeScribe(o);
     if (!words.length) throw new Error('转写结果里没有文字，这个文件可能没有人声。');
-    saveTx(id, { kind:'file', name: f.name, video: isVidName(f.name) || /^video\//.test(f.type) }, words);
+    saveTx(id, { kind:'file', name: f.name, video: isVidFile(f) }, words);
     loadWords(words, id, f.name);
-    keepMedia(id, f);
+    keepAll(id, f);
   } catch (e) { showStart(true); showErr(e.message); }
   finally { pgEnd(); }
 }
@@ -1169,8 +1284,17 @@ $('againBtn').addEventListener('click', () => { showErr(''); showStart(true); $(
 const drop = $('start');
 ['dragenter','dragover'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave','drop'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); if (ev === 'drop' || e.relatedTarget == null) drop.classList.remove('over'); }));
-document.addEventListener('drop', e => { if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+document.addEventListener('drop', async e => {
+  const dt = e.dataTransfer; if (!dt || !dt.files.length) return;
+  const files = [...dt.files], hp = [...(dt.items || [])].filter(i => i.kind === 'file' && i.getAsFileSystemHandle).map(i => i.getAsFileSystemHandle().catch(() => null));
+  try { const hs = await Promise.all(hp); for (const h of hs) { if (!h || h.kind !== 'file') continue; const f = files.find(x => x.name === h.name); if (f) fileHandles.set(f, h); } } catch (err) {}
+  handleFiles(files);
+});
 $('pick').addEventListener('change', e => { if (e.target.files.length) handleFiles(e.target.files); e.target.value = ''; });
+$('pick').closest('label').addEventListener('click', async e => {     // Chrome / Edge：用能记住文件位置的选择窗口
+  if (!window.showOpenFilePicker) return;
+  e.preventDefault(); const fs = await pickFiles('', true); if (fs.length) handleFiles(fs);
+});
 
 /* ---------- editing ---------- */
 function nudge(c, which){
@@ -1321,10 +1445,10 @@ document.addEventListener('keydown', e => {
   if (cur && k === 'f') { cur.flag = !cur.flag; save(); updateAsk(); select(cur, true); }
 });
 
-window.__cl = { S, P, play, MP, AZ, med: () => med, getPending, compactAudio, sliceWav, segment, normalizeScribe, cStart, cEnd, buildSrt, buildAsk, parseAnswer, loopChunk, stop, sel:() => sel, ytId };
+window.__cl = { DB, initStore, S, P, play, MP, AZ, med: () => med, getPending, compactAudio, sliceWav, segment, normalizeScribe, cStart, cEnd, buildSrt, buildAsk, parseAnswer, loopChunk, stop, sel:() => sel, ytId };
 loadSettings(); syncKeyUI(); showStart(true);
+initStore().then(() => { drawRecent(); resumePending(); });
 if (location.protocol === 'file:') $('localnote').hidden = false;
-resumePending();
 </script>
 </body>
 </html>
