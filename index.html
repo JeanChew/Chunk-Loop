@@ -76,6 +76,7 @@ body.has-video .layout{grid-template-columns:minmax(0,1fr) 380px}
 aside{position:sticky;top:64px;align-self:start}
 #ytwrap{aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:#000}
 #ytwrap iframe,#ytwrap>div{width:100%;height:100%;border:0;display:block}
+#vid{display:block;width:100%;max-height:72vh;object-fit:contain;background:#000;border-radius:12px}
 .sidehint{font-size:12px;color:var(--mute);margin-top:8px;line-height:1.6}
 main{max-width:820px;min-width:0}
 .spk{font-size:11.5px;color:var(--mute);margin:16px 0 2px 56px}
@@ -131,6 +132,7 @@ main.onlyflag .spk{display:none}
 @media (max-width:900px){
   body.has-video .layout{grid-template-columns:minmax(0,1fr)}
   aside{order:-1;position:sticky;top:0;z-index:20;background:var(--bg);padding:6px 0}
+  #vid{max-height:34vh}
   .sidehint{display:none}
   .top{position:static}
 }
@@ -200,6 +202,7 @@ main.onlyflag .spk{display:none}
   <main id="list"></main>
   <aside id="side" hidden>
     <div id="ytwrap"><div id="yt"></div></div>
+    <video id="vid" playsinline preload="auto" hidden></video>
     <div class="sidehint">点一句就循环这一句；点句子里的文字也会从头重听。</div>
   </aside>
 </div>
@@ -339,7 +342,7 @@ const AZ = (() => {
         continue;
       }
       // t/d dropped between consonants
-      if (/[nslfkpc](t|d)$/.test(base(a)) && !bv && !/^(h|y|w)/.test(b)) {
+      if (/[nslfkpc](t|d)$/.test(base(a)) && !/^(could|would|should)$/.test(a) && !bv && !/^(h|y|w)/.test(b)) {
         const ab = base(a);
         add('吞音', i, i + 1, words[i].t + ' ' + words[i + 1].t, ab.slice(0, -1) + ' ' + b, '末尾的 ' + ab.slice(-1) + ' 夹在两个辅音中间，常常整个被省掉', 3);
         continue;
@@ -387,7 +390,8 @@ const S = { words:[], chunks:[], marks:new Set(), notes:{}, dur:0, jsonName:'', 
 const P = { rate:1, gap:0.4, pre:0.12, post:0.18, hide:false, onlyflag:false };
 const STEP = 0.05;
 const $ = id => document.getElementById(id);
-const aud = $('aud');
+const aud = $('aud'), vidEl = $('vid');
+let med = aud;                 // 本地播放用的元素：纯音频用 <audio>，视频文件用 <video> 显示画面
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const num = v => { const n = typeof v === 'string' ? parseFloat(v) : v; return (typeof n === 'number' && isFinite(n)) ? n : null; };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
@@ -485,12 +489,35 @@ const once = (el, ok, bad) => new Promise((res, rej) => {
   el.addEventListener(ok, a); el.addEventListener(bad, b);
 });
 const BIG = 300 * 1048576;
+function clearLocalMedia(){ try { vidEl.pause(); } catch (e) {} vidEl.removeAttribute('src'); vidEl.load(); aud.removeAttribute('src'); med = aud; S.isVideo = false; }
+async function decodeOnly(file){                 // 只为了转写和导出单句音频，不用来播放
+  if (file.size > BIG) return;
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext; const ac = new AC();
+    const data = await file.arrayBuffer();
+    S.ab = await new Promise((res, rej) => { const p = ac.decodeAudioData(data, res, rej); if (p && p.catch) p.catch(rej); });
+    if (ac.close) ac.close();
+  } catch (e) { S.ab = null; }
+}
 async function loadAudio(file){
-  stop(); dropYT(); MP.kind = 'audio'; setStatus('正在读取音频…');
+  stop(); dropYT(); clearLocalMedia(); MP.kind = 'audio'; setStatus('正在读取文件…');
   S.audioName = file.name; S.precise = false; S.ab = null;
   const srcUrl = URL.createObjectURL(file);
   let dur = 0;
+  if (/^video\//.test(file.type) || /\.(mp4|mov|m4v|webm)$/i.test(file.name)) {
+    let ok = false;
+    try { vidEl.src = srcUrl; await once(vidEl, 'loadedmetadata', 'error'); ok = vidEl.videoWidth > 0 && isFinite(vidEl.duration); } catch (e) { ok = false; }
+    if (ok) {
+      med = vidEl; S.isVideo = true; S.dur = vidEl.duration; vidEl.preservesPitch = true; vidEl.webkitPreservesPitch = true;
+      showSide('vid'); setStatus('正在准备声音…');
+      await decodeOnly(file);
+      refreshAll(); showStatus(); return true;
+    }
+    clearLocalMedia();
+    setStatus('这个视频的画面浏览器放不出来（iPhone 录屏的 HEVC 格式在 Windows 上常这样），先只放声音。');
+  }
   try { aud.src = srcUrl; await once(aud, 'loadedmetadata', 'error'); dur = isFinite(aud.duration) ? aud.duration : 0; } catch (e) { dur = 0; }
+  med = aud;
   if ((!dur || dur <= 40 * 60) && file.size <= BIG) {  // 整段解码成 WAV，循环边界才精确；太大的文件不整个读进内存
     try {
       setStatus('正在解码音频（长文件要几秒）…');
@@ -533,7 +560,7 @@ const MP = {
   kind: null, lastCt: 0, lastWall: 0, seekT: null, seekWall: 0,
   ok(){ return this.kind === 'yt' ? ytReady : (this.kind === 'audio' && S.dur > 0); },
   time(){
-    if (this.kind !== 'yt') return aud.currentTime;
+    if (this.kind !== 'yt') return med.currentTime;
     const now = performance.now(); let ct = 0; try { ct = yt.getCurrentTime() || 0; } catch (e) {}
     if (this.seekT != null) {
       if (Math.abs(ct - this.seekT) < 0.75 || now - this.seekWall > 2000) { this.seekT = null; this.lastCt = ct; this.lastWall = now; }
@@ -544,13 +571,13 @@ const MP = {
     return st === 1 ? ct + Math.min(0.5, (now - this.lastWall) / 1000) * r : ct;
   },
   seekPlay(t, r){
-    if (this.kind !== 'yt') { aud.playbackRate = r; aud.currentTime = t; const p = aud.play(); if (p && p.catch) p.catch(() => {}); return; }
+    if (this.kind !== 'yt') { med.playbackRate = r; med.currentTime = t; const p = med.play(); if (p && p.catch) p.catch(() => {}); return; }
     try { yt.setPlaybackRate(r); yt.seekTo(t, true); yt.playVideo(); } catch (e) {}
     this.seekT = t; this.seekWall = performance.now(); this.lastCt = t; this.lastWall = this.seekWall;
   },
-  pause(){ if (this.kind === 'yt') { try { yt.pauseVideo(); } catch (e) {} } else if (!aud.paused) aud.pause(); },
-  ended(){ if (this.kind === 'yt') { try { return yt.getPlayerState() === 0; } catch (e) { return false; } } return aud.ended; },
-  setRate(r){ if (this.kind === 'yt') { try { yt.setPlaybackRate(r); } catch (e) {} } else aud.playbackRate = r; }
+  pause(){ if (this.kind === 'yt') { try { yt.pauseVideo(); } catch (e) {} } else if (!med.paused) med.pause(); },
+  ended(){ if (this.kind === 'yt') { try { return yt.getPlayerState() === 0; } catch (e) { return false; } } return med.ended; },
+  setRate(r){ if (this.kind === 'yt') { try { yt.setPlaybackRate(r); } catch (e) {} } else med.playbackRate = r; }
 };
 function loadYTApi(){
   return new Promise(res => {
@@ -569,11 +596,12 @@ const YT_ERR = {
   150: '视频作者不允许在别的网页里播放。文字已经转好了，可以录屏后把文件拖进来循环。',
   153: 'YouTube 拒绝在这个页面里播放（错误 153）。双击打开的本地文件会这样，请用放在网上的版本。'
 };
-function setVideo(on){ $('side').hidden = !on; document.body.classList.toggle('has-video', !!on); }
+function showSide(mode){ $('side').hidden = !mode; document.body.classList.toggle('has-video', !!mode); $('ytwrap').hidden = mode !== 'yt'; vidEl.hidden = mode !== 'vid'; }
+const setVideo = on => showSide(on ? 'yt' : null);
 function dropYT(){ if (yt) { try { yt.destroy(); } catch (e) {} } yt = null; ytVid = null; ytReady = false; $('ytwrap').innerHTML = '<div id="yt"></div>'; setVideo(false); }
 const waitYT = ms => new Promise(res => { if (ytReady) return res(true); ytReadyWait.push(res); setTimeout(() => res(false), ms); });
 async function openYouTube(vid){
-  stop(); MP.kind = 'yt'; S.audioName = ''; S.precise = false; aud.removeAttribute('src');
+  stop(); clearLocalMedia(); MP.kind = 'yt'; S.audioName = ''; S.precise = false;
   if (yt && ytVid === vid) { setVideo(true); return; }
   dropYT(); setVideo(true); ytVid = vid; S.dur = 0;
   const ok = await loadYTApi();
@@ -708,7 +736,7 @@ function showStatus(){
   const parts = [];
   if (S.words.length && MP.kind === 'yt' && !ytReady) parts.push('视频加载中…');
   if (S.words.length && !MP.kind) parts.push('<span class="warn">还缺原音频，把文件拖进来才能播放</span>');
-  if (MP.kind === 'audio' && S.dur && !S.precise) parts.push('文件较长，循环边界可能有几十毫秒误差');
+  if (MP.kind === 'audio' && S.dur && !S.precise && !S.isVideo) parts.push('文件较长，循环边界可能有几十毫秒误差');
   if (S.restored) parts.push('已恢复上次的标记和修改');
   if (MP.kind === 'audio' && S.words.length && S.dur && S.words[S.words.length - 1].e > S.dur + 1.5) parts.push('<span class="warn">文字比音频长，这两个文件可能不是同一段</span>');
   setStatus(parts.join(' · '));
@@ -974,7 +1002,7 @@ $('recent').addEventListener('click', e => {
   const r = getRecent().find(x => x.id === it.dataset.id), tx = getTx(it.dataset.id); if (!r || !tx) return;
   showErr('');
   if (r.kind === 'yt') { openYouTube(r.vid); loadWords(tx.words, r.id, r.title, r.url); }
-  else { stop(); dropYT(); MP.kind = null; S.dur = 0; S.audioName = ''; aud.removeAttribute('src'); loadWords(tx.words, r.id, r.title || r.name); }
+  else { stop(); dropYT(); clearLocalMedia(); MP.kind = null; S.dur = 0; S.audioName = ''; loadWords(tx.words, r.id, r.title || r.name); }
 });
 
 /* ---------- YouTube link ---------- */
@@ -1220,7 +1248,7 @@ document.addEventListener('keydown', e => {
   if (cur && k === 'f') { cur.flag = !cur.flag; save(); updateAsk(); select(cur, true); }
 });
 
-window.__cl = { S, P, play, MP, AZ, getPending, compactAudio, sliceWav, segment, normalizeScribe, cStart, cEnd, buildSrt, buildAsk, parseAnswer, loopChunk, stop, sel:() => sel, ytId };
+window.__cl = { S, P, play, MP, AZ, med: () => med, getPending, compactAudio, sliceWav, segment, normalizeScribe, cStart, cEnd, buildSrt, buildAsk, parseAnswer, loopChunk, stop, sel:() => sel, ytId };
 loadSettings(); syncKeyUI(); showStart(true);
 if (location.protocol === 'file:') $('localnote').hidden = false;
 resumePending();
